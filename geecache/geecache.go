@@ -41,11 +41,16 @@ var (
 
 // NewGroup create a new instance of Group
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
-	return NewGroupWithTTL(name, cacheBytes, getter, 0)
+	return NewGroupWithOptions(name, cacheBytes, getter, 0, StrategyLRU, 2)
 }
 
 // NewGroupWithTTL create a new instance of Group with default TTL
 func NewGroupWithTTL(name string, cacheBytes int64, getter Getter, defaultTTL int64) *Group {
+	return NewGroupWithOptions(name, cacheBytes, getter, defaultTTL, StrategyLRU, 2)
+}
+
+// NewGroupWithOptions create a new instance of Group with custom options
+func NewGroupWithOptions(name string, cacheBytes int64, getter Getter, defaultTTL int64, strategy CacheStrategy, k int) *Group {
 	if getter == nil {
 		panic("nil Getter")
 	}
@@ -54,7 +59,7 @@ func NewGroupWithTTL(name string, cacheBytes int64, getter Getter, defaultTTL in
 	g := &Group{
 		name:       name,
 		getter:     getter,
-		mainCache:  cache{cacheBytes: cacheBytes},
+		mainCache:  *NewCache(cacheBytes, strategy, k),
 		loader:     &singleflight.Group{},
 		defaultTTL: defaultTTL,
 	}
