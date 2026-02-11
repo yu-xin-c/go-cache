@@ -3,6 +3,7 @@ package geecache
 import (
 	"fmt"
 	pb "geecache/geecachepb"
+	"geecache/pool"
 	"geecache/singleflight"
 	"log"
 	"sync"
@@ -19,6 +20,8 @@ type Group struct {
 	loader *singleflight.Group
 	// default TTL in seconds, 0 means never expire
 	defaultTTL int64
+	// goroutine pool for concurrent operations
+	goroutinePool *pool.GoroutinePool
 }
 
 // A Getter loads data for a key.
@@ -56,12 +59,15 @@ func NewGroupWithOptions(name string, cacheBytes int64, getter Getter, defaultTT
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	// 初始化协程池，大小为 CPU 核心数的 2 倍
+	goroutinePoolSize := 10 // 默认大小
 	g := &Group{
-		name:       name,
-		getter:     getter,
-		mainCache:  *NewCache(cacheBytes, strategy, k),
-		loader:     &singleflight.Group{},
-		defaultTTL: defaultTTL,
+		name:          name,
+		getter:        getter,
+		mainCache:     *NewCache(cacheBytes, strategy, k),
+		loader:        &singleflight.Group{},
+		defaultTTL:    defaultTTL,
+		goroutinePool: pool.NewGoroutinePool(goroutinePoolSize, 1000),
 	}
 	groups[name] = g
 	return g
@@ -115,12 +121,37 @@ func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 	viewi, err := g.loader.Do(key, func() (interface{}, error) {
 		if g.peers != nil {
 			if peer, ok := g.peers.PickPeer(key); ok {
-				if value, err = g.getFromPeer(peer, key); err == nil {
-					// Cache the value with specified TTL
-					g.mainCache.add(key, value, ttl)
-					return value, nil
+				// 使用协程池从远程节点获取数据
+				var peerValue ByteView
+				var peerErr error
+
+				// 创建一个通道来接收结果
+				resultCh := make(chan struct {
+					value ByteView
+					err   error
+				}, 1)
+
+				// 提交任务到协程池
+				err := g.goroutinePool.Submit(func() {
+					v, e := g.getFromPeer(peer, key)
+					resultCh <- struct {
+						value ByteView
+						err   error
+					}{v, e}
+				})
+
+				if err == nil {
+					// 等待结果
+					result := <-resultCh
+					peerValue, peerErr = result.value, result.err
+
+					if peerErr == nil {
+						// Cache the value with specified TTL
+						g.mainCache.add(key, peerValue, ttl)
+						return peerValue, nil
+					}
+					log.Println("[GeeCache] Failed to get from peer", peerErr)
 				}
-				log.Println("[GeeCache] Failed to get from peer", err)
 			}
 		}
 

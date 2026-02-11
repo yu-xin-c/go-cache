@@ -2,6 +2,7 @@ package lru
 
 import (
 	"container/list"
+	"geecache/pool"
 	"sync"
 	"time"
 )
@@ -18,8 +19,8 @@ type LRUCache struct {
 	history sync.Map // 键到访问时间戳列表的映射 (string -> []int64)
 
 	// 优先级队列（最小堆），用于过期管理
-	heap    []*heapItem    // 最小堆数组
-	heapMap map[string]int // 键到堆索引的映射
+	heap    []*pool.HeapItem // 最小堆数组
+	heapMap map[string]int   // 键到堆索引的映射
 
 	// 当条目被删除时执行的回调函数
 	OnEvicted func(key string, value Value)
@@ -57,7 +58,7 @@ func NewLRUK(maxBytes int64, k int, onEvicted func(string, Value)) *LRUCache {
 		cache:     sync.Map{},
 		k:         k,
 		history:   sync.Map{},
-		heap:      make([]*heapItem, 0),
+		heap:      make([]*pool.HeapItem, 0),
 		heapMap:   make(map[string]int),
 		OnEvicted: onEvicted,
 		stopChan:  make(chan struct{}),
@@ -255,7 +256,7 @@ func (c *LRUCache) removeEntry(ele *list.Element) {
 // key 是要添加的键
 // expiresAt 是过期时间戳
 func (c *LRUCache) addToHeap(key string, expiresAt int64) {
-	item := &heapItem{key: key, expiresAt: expiresAt}
+	item := &pool.HeapItem{Key: key, ExpiresAt: expiresAt}
 	c.heap = append(c.heap, item)
 	index := len(c.heap) - 1
 	c.heapMap[key] = index
@@ -269,7 +270,7 @@ func (c *LRUCache) removeFromHeap(key string) {
 		lastIndex := len(c.heap) - 1
 		// 与最后一个元素交换
 		c.heap[index] = c.heap[lastIndex]
-		c.heapMap[c.heap[index].key] = index
+		c.heapMap[c.heap[index].Key] = index
 		// 删除最后一个元素
 		c.heap = c.heap[:lastIndex]
 		delete(c.heapMap, key)
@@ -287,13 +288,13 @@ func (c *LRUCache) removeFromHeap(key string) {
 func (c *LRUCache) heapifyUp(index int) {
 	for index > 0 {
 		parent := (index - 1) / 2
-		if c.heap[index].expiresAt >= c.heap[parent].expiresAt {
+		if c.heap[index].ExpiresAt >= c.heap[parent].ExpiresAt {
 			break
 		}
 		// 与父元素交换
 		c.heap[index], c.heap[parent] = c.heap[parent], c.heap[index]
-		c.heapMap[c.heap[index].key] = index
-		c.heapMap[c.heap[parent].key] = parent
+		c.heapMap[c.heap[index].Key] = index
+		c.heapMap[c.heap[parent].Key] = parent
 		index = parent
 	}
 }
@@ -306,10 +307,10 @@ func (c *LRUCache) heapifyDown(index int) {
 		right := 2*index + 2
 		smallest := index
 
-		if left < len(c.heap) && c.heap[left].expiresAt < c.heap[smallest].expiresAt {
+		if left < len(c.heap) && c.heap[left].ExpiresAt < c.heap[smallest].ExpiresAt {
 			smallest = left
 		}
-		if right < len(c.heap) && c.heap[right].expiresAt < c.heap[smallest].expiresAt {
+		if right < len(c.heap) && c.heap[right].ExpiresAt < c.heap[smallest].ExpiresAt {
 			smallest = right
 		}
 
@@ -319,8 +320,8 @@ func (c *LRUCache) heapifyDown(index int) {
 
 		// 与最小的子元素交换
 		c.heap[index], c.heap[smallest] = c.heap[smallest], c.heap[index]
-		c.heapMap[c.heap[index].key] = index
-		c.heapMap[c.heap[smallest].key] = smallest
+		c.heapMap[c.heap[index].Key] = index
+		c.heapMap[c.heap[smallest].Key] = smallest
 		index = smallest
 	}
 }
@@ -346,9 +347,9 @@ func (c *LRUCache) checkExpiration() {
 
 	c.heapMu.Lock()
 	// 处理堆中的过期项
-	for len(c.heap) > 0 && c.heap[0].expiresAt < now {
+	for len(c.heap) > 0 && c.heap[0].ExpiresAt < now {
 		item := c.heap[0]
-		key := item.key
+		key := item.Key
 
 		// 从堆中移除
 		c.removeFromHeap(key)

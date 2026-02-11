@@ -2,6 +2,7 @@ package lru
 
 import (
 	"container/list"
+	"geecache/pool"
 	"sync"
 	"time"
 )
@@ -13,14 +14,17 @@ type Cache struct {
 	ll       *list.List               // 双向链表，用于实现 LRU
 	cache    map[string]*list.Element // 键到链表元素的映射
 	// 优先级队列（最小堆），用于过期管理
-	heap    []*heapItem    // 最小堆数组
-	heapMap map[string]int // 键到堆索引的映射
+	heap    []*pool.HeapItem // 最小堆数组
+	heapMap map[string]int   // 键到堆索引的映射
 	// 当条目被删除时执行的回调函数
 	OnEvicted func(key string, value Value)
 	// 过期协程的停止信号
 	stopChan chan struct{}
 	// 堆操作的互斥锁
 	heapMu sync.Mutex
+	// 对象池，用于优化内存管理
+	entryPool    *pool.EntryPool
+	heapItemPool *pool.HeapItemPool
 }
 
 // entry 表示缓存中的一个条目
@@ -28,12 +32,6 @@ type entry struct {
 	key       string // 键
 	value     Value  // 值
 	expiresAt int64  // 过期时间戳，0 表示永不过期
-}
-
-// heapItem 表示过期堆中的一个项
-type heapItem struct {
-	key       string // 键
-	expiresAt int64  // 过期时间戳
 }
 
 // Value 接口用于计算值占用的字节数
@@ -46,13 +44,15 @@ type Value interface {
 // onEvicted 是当条目被删除时执行的回调函数
 func New(maxBytes int64, onEvicted func(string, Value)) *Cache {
 	c := &Cache{
-		maxBytes:  maxBytes,
-		ll:        list.New(),
-		cache:     make(map[string]*list.Element),
-		heap:      make([]*heapItem, 0),
-		heapMap:   make(map[string]int),
-		OnEvicted: onEvicted,
-		stopChan:  make(chan struct{}),
+		maxBytes:     maxBytes,
+		ll:           list.New(),
+		cache:        make(map[string]*list.Element),
+		heap:         make([]*pool.HeapItem, 0),
+		heapMap:      make(map[string]int),
+		OnEvicted:    onEvicted,
+		stopChan:     make(chan struct{}),
+		entryPool:    pool.NewEntryPool(),
+		heapItemPool: pool.NewHeapItemPool(),
 	}
 	// 启动过期检查协程
 	go c.expirationLoop()
@@ -173,7 +173,10 @@ func (c *Cache) removeEntry(ele *list.Element) {
 // key 是要添加的键
 // expiresAt 是过期时间戳
 func (c *Cache) addToHeap(key string, expiresAt int64) {
-	item := &heapItem{key: key, expiresAt: expiresAt}
+	// 从对象池获取 heapItem
+	item := c.heapItemPool.Get()
+	item.Key = key
+	item.ExpiresAt = expiresAt
 	c.heap = append(c.heap, item)
 	index := len(c.heap) - 1
 	c.heapMap[key] = index
@@ -185,11 +188,18 @@ func (c *Cache) addToHeap(key string, expiresAt int64) {
 func (c *Cache) removeFromHeap(key string) {
 	if index, ok := c.heapMap[key]; ok {
 		lastIndex := len(c.heap) - 1
+		// 检查索引是否有效
+		if index < 0 || index >= len(c.heap) {
+			delete(c.heapMap, key)
+			return
+		}
 		// 与最后一个元素交换
 		c.heap[index] = c.heap[lastIndex]
-		c.heapMap[c.heap[index].key] = index
-		// 删除最后一个元素
+		c.heapMap[c.heap[index].Key] = index
+		// 删除最后一个元素并回收
+		item := c.heap[lastIndex]
 		c.heap = c.heap[:lastIndex]
+		c.heapItemPool.Put(item)
 		delete(c.heapMap, key)
 
 		// 堆化
@@ -205,13 +215,13 @@ func (c *Cache) removeFromHeap(key string) {
 func (c *Cache) heapifyUp(index int) {
 	for index > 0 {
 		parent := (index - 1) / 2
-		if c.heap[index].expiresAt >= c.heap[parent].expiresAt {
+		if c.heap[index].ExpiresAt >= c.heap[parent].ExpiresAt {
 			break
 		}
 		// 与父元素交换
 		c.heap[index], c.heap[parent] = c.heap[parent], c.heap[index]
-		c.heapMap[c.heap[index].key] = index
-		c.heapMap[c.heap[parent].key] = parent
+		c.heapMap[c.heap[index].Key] = index
+		c.heapMap[c.heap[parent].Key] = parent
 		index = parent
 	}
 }
@@ -224,10 +234,10 @@ func (c *Cache) heapifyDown(index int) {
 		right := 2*index + 2
 		smallest := index
 
-		if left < len(c.heap) && c.heap[left].expiresAt < c.heap[smallest].expiresAt {
+		if left < len(c.heap) && c.heap[left].ExpiresAt < c.heap[smallest].ExpiresAt {
 			smallest = left
 		}
-		if right < len(c.heap) && c.heap[right].expiresAt < c.heap[smallest].expiresAt {
+		if right < len(c.heap) && c.heap[right].ExpiresAt < c.heap[smallest].ExpiresAt {
 			smallest = right
 		}
 
@@ -237,8 +247,8 @@ func (c *Cache) heapifyDown(index int) {
 
 		// 与最小的子元素交换
 		c.heap[index], c.heap[smallest] = c.heap[smallest], c.heap[index]
-		c.heapMap[c.heap[index].key] = index
-		c.heapMap[c.heap[smallest].key] = smallest
+		c.heapMap[c.heap[index].Key] = index
+		c.heapMap[c.heap[smallest].Key] = smallest
 		index = smallest
 	}
 }
@@ -264,9 +274,9 @@ func (c *Cache) checkExpiration() {
 
 	c.heapMu.Lock()
 	// 处理堆中的过期项
-	for len(c.heap) > 0 && c.heap[0].expiresAt < now {
+	for len(c.heap) > 0 && c.heap[0].ExpiresAt < now {
 		item := c.heap[0]
-		key := item.key
+		key := item.Key
 
 		// 从堆中移除
 		c.removeFromHeap(key)
