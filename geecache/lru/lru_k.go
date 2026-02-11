@@ -8,15 +8,14 @@ import (
 
 // LRUCache 是一个带过期时间支持的 LRU-K 缓存。
 type LRUCache struct {
-	maxBytes int64                    // 缓存的最大字节数
-	nbytes   int64                    // 当前缓存的字节数
-	ll       *list.List               // 双向链表，用于实现 LRU
-	cache    map[string]*list.Element // 键到链表元素的映射
+	maxBytes int64      // 缓存的最大字节数
+	nbytes   int64      // 当前缓存的字节数
+	ll       *list.List // 双向链表，用于实现 LRU
+	cache    sync.Map   // 键到链表元素的映射 (string -> *list.Element)
 
 	// LRU-K 相关
-	k           int                // K 值，表示需要访问 K 次才进入缓存
-	history     map[string][]int64 // 键到访问时间戳列表的映射
-	historyLock sync.Mutex         // 访问历史的锁
+	k       int      // K 值，表示需要访问 K 次才进入缓存
+	history sync.Map // 键到访问时间戳列表的映射 (string -> []int64)
 
 	// 优先级队列（最小堆），用于过期管理
 	heap    []*heapItem    // 最小堆数组
@@ -31,7 +30,7 @@ type LRUCache struct {
 	// 堆操作的互斥锁
 	heapMu sync.Mutex
 
-	// 缓存操作的互斥锁
+	// 缓存操作的互斥锁（主要用于nbytes和链表操作）
 	mu sync.Mutex
 }
 
@@ -55,9 +54,9 @@ func NewLRUK(maxBytes int64, k int, onEvicted func(string, Value)) *LRUCache {
 	c := &LRUCache{
 		maxBytes:  maxBytes,
 		ll:        list.New(),
-		cache:     make(map[string]*list.Element),
+		cache:     sync.Map{},
 		k:         k,
-		history:   make(map[string][]int64),
+		history:   sync.Map{},
 		heap:      make([]*heapItem, 0),
 		heapMap:   make(map[string]int),
 		OnEvicted: onEvicted,
@@ -84,13 +83,15 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 		expiresAt = time.Now().Unix() + ttl
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// 检查是否已存在
+	if ele, ok := c.cache.Load(key); ok {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 
-	if ele, ok := c.cache[key]; ok {
 		// 更新现有条目
-		c.ll.MoveToFront(ele)
-		kv := ele.Value.(*lruEntry)
+		listEle := ele.(*list.Element)
+		c.ll.MoveToFront(listEle)
+		kv := listEle.Value.(*lruEntry)
 		c.nbytes += int64(value.Len()) - int64(kv.value.Len())
 		kv.value = value
 		kv.lastAccess = time.Now().Unix()
@@ -114,26 +115,34 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 		}
 	} else {
 		// 检查访问历史
-		c.historyLock.Lock()
-		timestamps, exists := c.history[key]
+		timestamps, exists := c.history.Load(key)
+		var ts []int64
+		if exists {
+			ts = timestamps.([]int64)
+		}
 
 		// 添加当前访问时间戳
 		currentTime := time.Now().Unix()
-		timestamps = append(timestamps, currentTime)
+		ts = append(ts, currentTime)
 
 		// 只保留最近的 K 个时间戳
-		if len(timestamps) > c.k {
-			timestamps = timestamps[len(timestamps)-c.k:]
+		if len(ts) > c.k {
+			ts = ts[len(ts)-c.k:]
 		}
 
-		c.history[key] = timestamps
+		c.history.Store(key, ts)
 
 		// 检查是否达到 K 次访问
-		shouldCache := !exists || len(timestamps) >= c.k
-		_ = exists // 避免未使用变量警告
-		c.historyLock.Unlock()
+		shouldCache := !exists || len(ts) >= c.k
 
 		if shouldCache {
+			c.mu.Lock()
+			// 再次检查，避免并发问题
+			if _, ok := c.cache.Load(key); ok {
+				c.mu.Unlock()
+				return
+			}
+
 			// 添加新条目到缓存
 			ele := c.ll.PushFront(&lruEntry{
 				key:        key,
@@ -141,7 +150,7 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 				expiresAt:  expiresAt,
 				lastAccess: currentTime,
 			})
-			c.cache[key] = ele
+			c.cache.Store(key, ele)
 			c.nbytes += int64(len(key)) + int64(value.Len())
 
 			// 如果有过期时间，添加到堆中
@@ -155,6 +164,7 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 			for c.maxBytes != 0 && c.maxBytes < c.nbytes {
 				c.RemoveOldest()
 			}
+			c.mu.Unlock()
 		}
 	}
 }
@@ -163,38 +173,42 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 // key 是要查找的键
 // 返回值和是否找到的标志
 func (c *LRUCache) Get(key string) (value Value, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// 检查缓存
+	if ele, ok := c.cache.Load(key); ok {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 
-	if ele, ok := c.cache[key]; ok {
-		kv := ele.Value.(*lruEntry)
+		listEle := ele.(*list.Element)
+		kv := listEle.Value.(*lruEntry)
 		// 检查是否过期（惰性过期）
 		if kv.expiresAt > 0 && kv.expiresAt < time.Now().Unix() {
 			// 过期，删除该项
-			c.removeEntry(ele)
+			c.removeEntry(listEle)
 			return nil, false
 		}
 
 		// 未过期，移到队首并更新访问时间
-		c.ll.MoveToFront(ele)
+		c.ll.MoveToFront(listEle)
 		kv.lastAccess = time.Now().Unix()
 		return kv.value, true
 	}
 
 	// 缓存未命中，记录访问历史
-	c.historyLock.Lock()
-	timestamps, exists := c.history[key]
-	currentTime := time.Now().Unix()
-	timestamps = append(timestamps, currentTime)
-
-	// 只保留最近的 K 个时间戳
-	if len(timestamps) > c.k {
-		timestamps = timestamps[len(timestamps)-c.k:]
+	timestamps, exists := c.history.Load(key)
+	var ts []int64
+	if exists {
+		ts = timestamps.([]int64)
 	}
 
-	c.history[key] = timestamps
-	_ = exists // 避免未使用变量警告
-	c.historyLock.Unlock()
+	currentTime := time.Now().Unix()
+	ts = append(ts, currentTime)
+
+	// 只保留最近的 K 个时间戳
+	if len(ts) > c.k {
+		ts = ts[len(ts)-c.k:]
+	}
+
+	c.history.Store(key, ts)
 
 	return nil, false
 }
@@ -218,7 +232,7 @@ func (c *LRUCache) removeEntry(ele *list.Element) {
 
 	// 从链表中删除
 	c.ll.Remove(ele)
-	delete(c.cache, key)
+	c.cache.Delete(key)
 	c.nbytes -= int64(len(key)) + int64(kv.value.Len())
 
 	// 如果有过期时间，从堆中删除
@@ -229,9 +243,7 @@ func (c *LRUCache) removeEntry(ele *list.Element) {
 	}
 
 	// 从历史记录中删除
-	c.historyLock.Lock()
-	delete(c.history, key)
-	c.historyLock.Unlock()
+	c.history.Delete(key)
 
 	// 调用删除回调
 	if c.OnEvicted != nil {
@@ -344,8 +356,8 @@ func (c *LRUCache) checkExpiration() {
 
 		// 如果缓存中还存在，删除它
 		c.mu.Lock()
-		if ele, ok := c.cache[key]; ok {
-			c.removeEntry(ele)
+		if ele, ok := c.cache.Load(key); ok {
+			c.removeEntry(ele.(*list.Element))
 		}
 		c.mu.Unlock()
 
