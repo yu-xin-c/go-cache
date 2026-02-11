@@ -1,4 +1,4 @@
-# GeeCache
+# Mygo-Cache
 
 MyGo-Cache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Memcached 和 Redis 的设计理念，结合了字节跳动Kietex和hertz的内存管理策略所设计，具有以下特点：
 
