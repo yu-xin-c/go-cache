@@ -1,11 +1,11 @@
-package geecache
+package mygocache
 
 import (
 	"fmt"
-	pb "geecache/geecachepb"
-	"geecache/pool"
-	"geecache/singleflight"
 	"log"
+	pb "mygocache/geecachepb"
+	"mygocache/pool"
+	"mygocache/singleflight"
 	"sync"
 )
 
@@ -102,9 +102,55 @@ func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 }
 
 // Set value for a key with specified TTL
-func (g *Group) Set(key string, value []byte, ttl int64) {
+func (g *Group) Set(key string, value []byte, ttl int64) error {
 	byteView := ByteView{b: cloneBytes(value)}
 	g.mainCache.add(key, byteView, ttl)
+	return nil
+}
+
+// Delete removes a key from cache
+func (g *Group) Delete(key string) error {
+	g.mainCache.delete(key)
+	return nil
+}
+
+// Clear removes all keys from cache
+func (g *Group) Clear() error {
+	g.mainCache.clear()
+	return nil
+}
+
+// Stats returns cache statistics
+type Stats struct {
+	ItemCount  int
+	HitCount   int
+	MissCount  int
+	TotalCount int
+}
+
+// Stats returns cache statistics
+func (g *Group) Stats() Stats {
+	return g.mainCache.stats()
+}
+
+// GetMulti gets multiple keys from cache
+func (g *Group) GetMulti(keys []string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for _, key := range keys {
+		if v, ok := g.mainCache.get(key); ok {
+			result[key] = v.ByteSlice()
+		}
+	}
+	return result, nil
+}
+
+// SetMulti sets multiple keys in cache
+func (g *Group) SetMulti(values map[string][]byte, ttl int64) error {
+	for key, value := range values {
+		byteView := ByteView{b: cloneBytes(value)}
+		g.mainCache.add(key, byteView, ttl)
+	}
+	return nil
 }
 
 // RegisterPeers registers a PeerPicker for choosing remote peer

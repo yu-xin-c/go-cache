@@ -1,6 +1,6 @@
-# Mygo-Cache
+# MyGoCache
 
-MyGo-Cache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Memcached 和 Redis 的设计理念，结合了字节跳动Kietex和hertz的内存管理策略所设计，具有以下特点：
+MyGoCache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Memcached 和 Redis 的设计理念，结合了字节跳动Kietex和hertz的内存管理策略所设计，具有以下特点：
 
 ## 核心功能
 
@@ -18,13 +18,13 @@ MyGo-Cache 是一个基于 Go 语言实现的分布式缓存系统，参考了 M
 
 ```
 gee-cache/
-├── geecache/           # 核心缓存实现
+├── mygocache/           # 核心缓存实现
 │   ├── lru/            # LRU 缓存实现（包含过期管理）
 │   ├── pool/           # 协程池和对象池实现
-│   ├── geecachepb/     # Protocol Buffers 定义
+│   ├── mygocachepb/     # Protocol Buffers 定义
 │   ├── kitex_gen/      # Kitex 代码生成目录
 │   ├── cache.go        # 缓存封装
-│   ├── geecache.go     # 核心缓存组实现
+│   ├── mygocache.go     # 核心缓存组实现
 │   ├── http.go         # HTTP 服务实现
 │   ├── kitex.go        # Kitex 服务实现
 │   ├── peers.go        # 节点管理
@@ -79,10 +79,10 @@ gee-cache/
 ### 基本使用
 
 ```go
-import "geecache"
+import "mygocache"
 
 // 创建缓存组，设置默认 TTL 为 5 秒
-gee := geecache.NewGroupWithTTL("test", 2<<10, geecache.GetterFunc(
+gee := mygocache.NewGroupWithTTL("test", 2<<10, mygocache.GetterFunc(
     func(key string) ([]byte, error) {
         // 缓存未命中时的回调函数
         return []byte("value"), nil

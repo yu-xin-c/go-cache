@@ -1,4 +1,4 @@
-module geecache
+module mygocache
 
 go 1.13
 

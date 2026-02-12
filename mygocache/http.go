@@ -1,11 +1,11 @@
-package geecache
+package mygocache
 
 import (
 	"fmt"
-	"geecache/consistenthash"
-	pb "geecache/geecachepb"
 	"io/ioutil"
 	"log"
+	"mygocache/consistenthash"
+	pb "mygocache/geecachepb"
 	"net/http"
 	"net/url"
 	"strings"

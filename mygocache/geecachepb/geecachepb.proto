@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package geecachepb;
+package mygocachepb;
 
 message Request {
   string group = 1;

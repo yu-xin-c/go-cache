@@ -1,14 +1,13 @@
 package main
 
 import (
-	"geecache"
 	"log"
 	"time"
 )
 
 func testPool() {
 	// 创建一个缓存组
-	gee := geecache.NewGroupWithTTL("test", 2<<10, geecache.GetterFunc(
+	gee := mygocache.NewGroupWithTTL("test", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
 			return []byte("value"), nil

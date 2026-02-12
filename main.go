@@ -11,7 +11,6 @@ kkk not exist
 import (
 	"flag"
 	"fmt"
-	"geecache"
 	"log"
 	"net/http"
 )
@@ -22,8 +21,8 @@ var db = map[string]string{
 	"Sam":  "567",
 }
 
-func createGroup() *geecache.Group {
-	return geecache.NewGroup("scores", 2<<10, geecache.GetterFunc(
+func createGroup() *mygocache.Group {
+	return mygocache.NewGroup("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
 			if v, ok := db[key]; ok {
@@ -33,23 +32,23 @@ func createGroup() *geecache.Group {
 		}))
 }
 
-func startCacheServer(addr string, addrs []string, gee *geecache.Group, useKitex bool) {
+func startCacheServer(addr string, addrs []string, gee *mygocache.Group, useKitex bool) {
 	if useKitex {
-		peers := geecache.NewKitexPool(addr)
+		peers := mygocache.NewKitexPool(addr)
 		peers.Set(addrs...)
 		gee.RegisterPeers(peers)
-		log.Println("geecache Kitex is running at", addr)
-		log.Fatal(geecache.StartKitexServer(addr))
+		log.Println("mygocache Kitex is running at", addr)
+		log.Fatal(mygocache.StartKitexServer(addr))
 	} else {
-		peers := geecache.NewHTTPPool(addr)
+		peers := mygocache.NewHTTPPool(addr)
 		peers.Set(addrs...)
 		gee.RegisterPeers(peers)
-		log.Println("geecache HTTP is running at", addr)
+		log.Println("mygocache HTTP is running at", addr)
 		log.Fatal(http.ListenAndServe(addr[7:], peers))
 	}
 }
 
-func startAPIServer(apiAddr string, gee *geecache.Group) {
+func startAPIServer(apiAddr string, gee *mygocache.Group) {
 	http.Handle("/api", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			key := r.URL.Query().Get("key")

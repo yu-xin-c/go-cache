@@ -1,4 +1,4 @@
-package geecache
+package mygocache
 
 import (
 	"context"
@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"geecache/consistenthash"
-	pb "geecache/geecachepb"
-	"geecache/kitex_gen/geecache"
-	"geecache/kitex_gen/geecache/groupcache"
+	"mygocache/consistenthash"
+	pb "mygocache/geecachepb"
+	"mygocache/kitex_gen/geecache"
+	"mygocache/kitex_gen/geecache/groupcache"
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/server"
@@ -112,6 +112,97 @@ func (s *KitexServer) Get(ctx context.Context, req *geecache.Request) (resp *gee
 	}
 
 	return &geecache.Response{Value: view.ByteSlice()}, nil
+}
+
+// Set implements the GroupCache Set method
+func (s *KitexServer) Set(ctx context.Context, req *geecache.SetRequest) (resp *geecache.SetResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	err = group.Set(req.Key, req.Value, req.Ttl)
+	if err != nil {
+		return &geecache.SetResponse{Success: false}, err
+	}
+
+	return &geecache.SetResponse{Success: true}, nil
+}
+
+// Delete implements the GroupCache Delete method
+func (s *KitexServer) Delete(ctx context.Context, req *geecache.DeleteRequest) (resp *geecache.DeleteResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	err = group.Delete(req.Key)
+	if err != nil {
+		return &geecache.DeleteResponse{Success: false}, err
+	}
+
+	return &geecache.DeleteResponse{Success: true}, nil
+}
+
+// Clear implements the GroupCache Clear method
+func (s *KitexServer) Clear(ctx context.Context, req *geecache.ClearRequest) (resp *geecache.ClearResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	err = group.Clear()
+	if err != nil {
+		return &geecache.ClearResponse{Success: false}, err
+	}
+
+	return &geecache.ClearResponse{Success: true}, nil
+}
+
+// Stats implements the GroupCache Stats method
+func (s *KitexServer) Stats(ctx context.Context, req *geecache.StatsRequest) (resp *geecache.StatsResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	stats := group.Stats()
+	return &geecache.StatsResponse{
+		ItemCount:  int64(stats.ItemCount),
+		HitCount:   int64(stats.HitCount),
+		MissCount:  int64(stats.MissCount),
+		TotalCount: int64(stats.TotalCount),
+	}, nil
+}
+
+// GetMulti implements the GroupCache GetMulti method
+func (s *KitexServer) GetMulti(ctx context.Context, req *geecache.GetMultiRequest) (resp *geecache.GetMultiResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	values, err := group.GetMulti(req.Keys)
+	if err != nil {
+		return &geecache.GetMultiResponse{Values: make(map[string][]byte)}, err
+	}
+
+	return &geecache.GetMultiResponse{Values: values}, nil
+}
+
+// SetMulti implements the GroupCache SetMulti method
+func (s *KitexServer) SetMulti(ctx context.Context, req *geecache.SetMultiRequest) (resp *geecache.SetMultiResponse, err error) {
+	group := GetGroup(req.Group)
+	if group == nil {
+		return nil, fmt.Errorf("group not found: %s", req.Group)
+	}
+
+	err = group.SetMulti(req.Values, req.Ttl)
+	if err != nil {
+		return &geecache.SetMultiResponse{Success: false}, err
+	}
+
+	return &geecache.SetMultiResponse{Success: true}, nil
 }
 
 // StartKitexServer starts a Kitex server

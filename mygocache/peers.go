@@ -1,6 +1,6 @@
-package geecache
+package mygocache
 
-import pb "geecache/geecachepb"
+import pb "mygocache/geecachepb"
 
 // PeerPicker is the interface that must be implemented to locate
 // the peer that owns a specific key.

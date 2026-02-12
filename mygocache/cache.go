@@ -1,7 +1,7 @@
-package geecache
+package mygocache
 
 import (
-	"geecache/lru"
+	"mygocache/lru"
 	"sync"
 )
 
@@ -44,7 +44,7 @@ func defaultCache(cacheBytes int64) *cache {
 func (c *cache) add(key string, value ByteView, ttl int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	switch c.strategy {
 	case StrategyLRUK:
 		if c.lruK == nil {
@@ -62,7 +62,7 @@ func (c *cache) add(key string, value ByteView, ttl int64) {
 func (c *cache) get(key string) (value ByteView, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	switch c.strategy {
 	case StrategyLRUK:
 		if c.lruK == nil {
@@ -81,4 +81,63 @@ func (c *cache) get(key string) (value ByteView, ok bool) {
 	}
 
 	return
+}
+
+func (c *cache) delete(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	switch c.strategy {
+	case StrategyLRUK:
+		if c.lruK != nil {
+			c.lruK.Remove(key)
+		}
+	default: // StrategyLRU
+		if c.lru != nil {
+			c.lru.Remove(key)
+		}
+	}
+}
+
+func (c *cache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	switch c.strategy {
+	case StrategyLRUK:
+		if c.lruK != nil {
+			c.lruK.Clear()
+		}
+	default: // StrategyLRU
+		if c.lru != nil {
+			c.lru.Clear()
+		}
+	}
+}
+
+func (c *cache) stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var itemCount, hitCount, missCount, totalCount int
+
+	switch c.strategy {
+	case StrategyLRUK:
+		if c.lruK != nil {
+			itemCount = c.lruK.Len()
+			// TODO: Add hit/miss count for LRU-K
+		}
+	default: // StrategyLRU
+		if c.lru != nil {
+			itemCount = c.lru.Len()
+			// TODO: Add hit/miss count for LRU
+		}
+	}
+
+	return Stats{
+		ItemCount:  itemCount,
+		HitCount:   hitCount,
+		MissCount:  missCount,
+		TotalCount: hitCount + missCount,
+	}
 }
