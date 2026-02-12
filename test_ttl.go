@@ -2,57 +2,31 @@ package main
 
 import (
 	"fmt"
-	"geecache"
 	"log"
-	"net/http"
 	"time"
+
+	"mygocache"
 )
 
-var db = map[string]string{
+var ttlDB = map[string]string{
 	"Tom":  "630",
 	"Jack": "589",
 	"Sam":  "567",
 }
 
-func createGroup() *geecache.Group {
-	return geecache.NewGroupWithTTL("scores", 2<<10, geecache.GetterFunc(
+func createTTLGroup() *mygocache.Group {
+	return mygocache.NewGroupWithTTL("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
-			if v, ok := db[key]; ok {
+			if v, ok := ttlDB[key]; ok {
 				return []byte(v), nil
 			}
 			return nil, fmt.Errorf("%s not exist", key)
 		}), 5) // 默认 TTL 为 5 秒
 }
 
-func startCacheServer(addr string, addrs []string, gee *geecache.Group) {
-	peers := geecache.NewHTTPPool(addr)
-	peers.Set(addrs...)
-	gee.RegisterPeers(peers)
-	log.Println("geecache is running at", addr)
-	log.Fatal(http.ListenAndServe(addr[7:], peers))
-}
-
-func startAPIServer(apiAddr string, gee *geecache.Group) {
-	http.Handle("/api", http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			key := r.URL.Query().Get("key")
-			view, err := gee.Get(key)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(view.ByteSlice())
-
-		}))
-	log.Println("frontend server is running at", apiAddr)
-	log.Fatal(http.ListenAndServe(apiAddr[7:], nil))
-
-}
-
 func testTTL() {
-	gee := createGroup()
+	gee := createTTLGroup()
 
 	// 测试 1: 基本 TTL 功能
 	log.Println("=== Test 1: Basic TTL functionality ===")
@@ -134,26 +108,7 @@ func testTTL() {
 	log.Println("\n=== All tests completed ===")
 }
 
-func main() {
+func mainTTL() {
 	// 运行 TTL 测试
 	testTTL()
-
-	// 启动服务器（可选）
-	/*
-		apiAddr := "http://localhost:9999"
-		addrMap := map[int]string{
-			8001: "http://localhost:8001",
-			8002: "http://localhost:8002",
-			8003: "http://localhost:8003",
-		}
-
-		var addrs []string
-		for _, v := range addrMap {
-			addrs = append(addrs, v)
-		}
-
-		gee := createGroup()
-		go startAPIServer(apiAddr, gee)
-		startCacheServer(addrMap[8001], addrs, gee)
-	*/
 }

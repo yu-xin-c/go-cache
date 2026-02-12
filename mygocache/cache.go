@@ -119,18 +119,18 @@ func (c *cache) stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var itemCount, hitCount, missCount, totalCount int
+	var itemCount, hitCount, missCount int
 
 	switch c.strategy {
 	case StrategyLRUK:
 		if c.lruK != nil {
 			itemCount = c.lruK.Len()
-			// TODO: Add hit/miss count for LRU-K
+			// TODO: 增加 LRU-K 的命中与未命中统计
 		}
 	default: // StrategyLRU
 		if c.lru != nil {
 			itemCount = c.lru.Len()
-			// TODO: Add hit/miss count for LRU
+			// TODO: 增加 LRU 的命中与未命中统计
 		}
 	}
 

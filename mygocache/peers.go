@@ -1,14 +1,11 @@
 package mygocache
 
-import pb "mygocache/geecachepb"
-
-// PeerPicker is the interface that must be implemented to locate
-// the peer that owns a specific key.
+// PeerPicker 用于根据 key 选择远程节点
 type PeerPicker interface {
 	PickPeer(key string) (peer PeerGetter, ok bool)
 }
 
-// PeerGetter is the interface that must be implemented by a peer.
+// PeerGetter 用于从远程节点获取数据
 type PeerGetter interface {
-	Get(in *pb.Request, out *pb.Response) error
+	Get(group string, key string) ([]byte, error)
 }

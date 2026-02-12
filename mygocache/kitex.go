@@ -8,14 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"mygocache/consistenthash"
-	pb "mygocache/geecachepb"
 	"mygocache/kitex_gen/geecache"
 	"mygocache/kitex_gen/geecache/groupcache"
 
-	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/server"
 )
 
@@ -23,7 +20,7 @@ const (
 	defaultReplicas = 50
 )
 
-// KitexPool implements PeerPicker for a pool of Kitex peers.
+// KitexPool 用于管理 Kitex 节点池
 type KitexPool struct {
 	self         string
 	mu           sync.Mutex
@@ -31,7 +28,7 @@ type KitexPool struct {
 	kitexClients map[string]groupcache.Client
 }
 
-// NewKitexPool initializes a Kitex pool of peers.
+// NewKitexPool 初始化 Kitex 节点池
 func NewKitexPool(self string) *KitexPool {
 	return &KitexPool{
 		self:         self,
@@ -39,7 +36,7 @@ func NewKitexPool(self string) *KitexPool {
 	}
 }
 
-// Set updates the pool's list of peers.
+// Set 更新节点列表
 func (p *KitexPool) Set(peers ...string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -48,15 +45,17 @@ func (p *KitexPool) Set(peers ...string) {
 	p.kitexClients = make(map[string]groupcache.Client, len(peers))
 	for _, peer := range peers {
 		if peer != p.self {
-			cli := groupcache.NewClient(peer, client.WithTransportInitializer(func() client.Option {
-				return client.WithDialTimeout(5 * time.Second)
-			}))
+			cli, err := groupcache.NewClient(peer)
+			if err != nil {
+				log.Printf("创建 Kitex 客户端失败: %v", err)
+				continue
+			}
 			p.kitexClients[peer] = cli
 		}
 	}
 }
 
-// PickPeer picks a peer according to key
+// PickPeer 根据 key 选择节点
 func (p *KitexPool) PickPeer(key string) (PeerGetter, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -75,31 +74,30 @@ type kitexGetter struct {
 	client groupcache.Client
 }
 
-func (g *kitexGetter) Get(in *pb.Request, out *pb.Response) error {
+func (g *kitexGetter) Get(group string, key string) ([]byte, error) {
 	kiteReq := &geecache.Request{
-		Group: in.GetGroup(),
-		Key:   in.GetKey(),
+		Group: group,
+		Key:   key,
 	}
 	resp, err := g.client.Get(context.Background(), kiteReq)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	out.Value = resp.Value
-	return nil
+	return resp.Value, nil
 }
 
 var _ PeerGetter = (*kitexGetter)(nil)
 
-// KitexServer implements the GroupCache service
+// KitexServer 实现 GroupCache 服务
 type KitexServer struct {
 }
 
-// NewKitexServer creates a new Kitex server
+// NewKitexServer 创建 Kitex 服务端
 func NewKitexServer() *KitexServer {
 	return &KitexServer{}
 }
 
-// Get implements the GroupCache Get method
+// Get 实现 GroupCache 的 Get 方法
 func (s *KitexServer) Get(ctx context.Context, req *geecache.Request) (resp *geecache.Response, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -114,7 +112,7 @@ func (s *KitexServer) Get(ctx context.Context, req *geecache.Request) (resp *gee
 	return &geecache.Response{Value: view.ByteSlice()}, nil
 }
 
-// Set implements the GroupCache Set method
+// Set 实现 GroupCache 的 Set 方法
 func (s *KitexServer) Set(ctx context.Context, req *geecache.SetRequest) (resp *geecache.SetResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -129,7 +127,7 @@ func (s *KitexServer) Set(ctx context.Context, req *geecache.SetRequest) (resp *
 	return &geecache.SetResponse{Success: true}, nil
 }
 
-// Delete implements the GroupCache Delete method
+// Delete 实现 GroupCache 的 Delete 方法
 func (s *KitexServer) Delete(ctx context.Context, req *geecache.DeleteRequest) (resp *geecache.DeleteResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -144,7 +142,7 @@ func (s *KitexServer) Delete(ctx context.Context, req *geecache.DeleteRequest) (
 	return &geecache.DeleteResponse{Success: true}, nil
 }
 
-// Clear implements the GroupCache Clear method
+// Clear 实现 GroupCache 的 Clear 方法
 func (s *KitexServer) Clear(ctx context.Context, req *geecache.ClearRequest) (resp *geecache.ClearResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -159,7 +157,7 @@ func (s *KitexServer) Clear(ctx context.Context, req *geecache.ClearRequest) (re
 	return &geecache.ClearResponse{Success: true}, nil
 }
 
-// Stats implements the GroupCache Stats method
+// Stats 实现 GroupCache 的 Stats 方法
 func (s *KitexServer) Stats(ctx context.Context, req *geecache.StatsRequest) (resp *geecache.StatsResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -175,7 +173,7 @@ func (s *KitexServer) Stats(ctx context.Context, req *geecache.StatsRequest) (re
 	}, nil
 }
 
-// GetMulti implements the GroupCache GetMulti method
+// GetMulti 实现 GroupCache 的 GetMulti 方法
 func (s *KitexServer) GetMulti(ctx context.Context, req *geecache.GetMultiRequest) (resp *geecache.GetMultiResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -190,7 +188,7 @@ func (s *KitexServer) GetMulti(ctx context.Context, req *geecache.GetMultiReques
 	return &geecache.GetMultiResponse{Values: values}, nil
 }
 
-// SetMulti implements the GroupCache SetMulti method
+// SetMulti 实现 GroupCache 的 SetMulti 方法
 func (s *KitexServer) SetMulti(ctx context.Context, req *geecache.SetMultiRequest) (resp *geecache.SetMultiResponse, err error) {
 	group := GetGroup(req.Group)
 	if group == nil {
@@ -205,9 +203,9 @@ func (s *KitexServer) SetMulti(ctx context.Context, req *geecache.SetMultiReques
 	return &geecache.SetMultiResponse{Success: true}, nil
 }
 
-// StartKitexServer starts a Kitex server
+// StartKitexServer 启动 Kitex 服务
 func StartKitexServer(addr string) error {
-	// Parse port from addr
+	// 从地址中解析端口
 	portStr := strings.TrimPrefix(addr, "http://")
 	portStr = strings.Split(portStr, ":")[1]
 	port, err := strconv.Atoi(portStr)
@@ -219,7 +217,7 @@ func StartKitexServer(addr string) error {
 		server.WithServiceAddr(&net.TCPAddr{Port: port}),
 	)
 	service := NewKitexServer()
-	if err := groupcache.RegisterService(service, s); err != nil {
+	if err := groupcache.RegisterService(s, service); err != nil {
 		return err
 	}
 	log.Printf("Kitex server is running at %s", addr)

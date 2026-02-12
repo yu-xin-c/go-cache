@@ -5,7 +5,7 @@ package groupcache
 import (
 	"context"
 	"errors"
-	geecache "geecache/kitex_gen/geecache"
+	geecache "mygocache/kitex_gen/geecache"
 	client "github.com/cloudwego/kitex/client"
 	kitex "github.com/cloudwego/kitex/pkg/serviceinfo"
 )

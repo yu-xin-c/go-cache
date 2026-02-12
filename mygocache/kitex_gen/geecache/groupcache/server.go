@@ -2,7 +2,7 @@
 package groupcache
 
 import (
-	geecache "geecache/kitex_gen/geecache"
+	geecache "mygocache/kitex_gen/geecache"
 	server "github.com/cloudwego/kitex/server"
 )
 

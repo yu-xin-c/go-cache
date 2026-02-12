@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"time"
+
+	"mygocache"
 )
 
 func testPool() {
@@ -35,6 +37,6 @@ func testPool() {
 	log.Println("Pool test completed!")
 }
 
-func main() {
+func mainPool() {
 	testPool()
 }

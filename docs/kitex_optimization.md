@@ -2,7 +2,7 @@
 
 ## 1. 优化背景
 
-GeeCache 原使用 HTTP 协议进行节点间通信，存在以下性能瓶颈：
+mygocache 原使用 HTTP 协议进行节点间通信，存在以下性能瓶颈：
 
 - **连接开销大**：每次请求都需要建立 TCP 连接，连接建立和关闭的开销较大
 - **无连接复用**：HTTP/1.1 虽然支持 Keep-Alive，但在高并发场景下连接复用效率有限
@@ -46,7 +46,7 @@ GeeCache 原使用 HTTP 协议进行节点间通信，存在以下性能瓶颈�
 使用 Thrift IDL 定义服务接口：
 
 ```thrift
-namespace go geecache
+namespace go mygocache
 
 struct Request {
     1: string group
@@ -217,7 +217,7 @@ go run main.go -port=8001 -kitex
 
 ```bash
 # 使用 wrk 测试 HTTP 服务
-wrk -t10 -c100 -d30s http://localhost:8001/_geecache/scores/Tom
+wrk -t10 -c100 -d30s http://localhost:8001/_mygocache/scores/Tom
 
 # 使用自定义测试脚本测试 Kitex 服务
 go run benchmark_kitex.go -concurrency=10 -requests=10000
@@ -254,11 +254,11 @@ log.SetLevel(log.LevelInfo)
 
 ## 9. 结论
 
-通过将 GeeCache 的通信协议从 HTTP 迁移到 Kitex，显著提升了系统的性能和可靠性：
+通过将 mygocache 的通信协议从 HTTP 迁移到 Kitex，显著提升了系统的性能和可靠性：
 
 - **性能提升**：QPS 提升约 4 倍，延迟降低约 75%
 - **资源节省**：内存占用降低约 40%
 - **可扩展性**：支持更丰富的服务治理功能，便于系统扩展
 - **生态集成**：与字节跳动的技术生态更好地集成
 
-Kitex 作为字节跳动开源的高性能 RPC 框架，为 GeeCache 提供了更高效、更可靠的通信方案，适合在高并发、低延迟的缓存场景中使用。
+Kitex 作为字节跳动开源的高性能 RPC 框架，为 mygocache 提供了更高效、更可靠的通信方案，适合在高并发、低延迟的缓存场景中使用。

@@ -3,36 +3,34 @@ package mygocache
 import (
 	"fmt"
 	"log"
-	pb "mygocache/geecachepb"
 	"mygocache/pool"
 	"mygocache/singleflight"
 	"sync"
 )
 
-// A Group is a cache namespace and associated data loaded spread over
+// Group 表示缓存命名空间与其数据加载逻辑
 type Group struct {
 	name      string
 	getter    Getter
 	mainCache cache
 	peers     PeerPicker
-	// use singleflight.Group to make sure that
-	// each key is only fetched once
+	// 使用 singleflight.Group 确保每个 key 只被加载一次
 	loader *singleflight.Group
-	// default TTL in seconds, 0 means never expire
+	// 默认 TTL（秒），0 表示永不过期
 	defaultTTL int64
-	// goroutine pool for concurrent operations
+	// 并发操作使用的协程池
 	goroutinePool *pool.GoroutinePool
 }
 
-// A Getter loads data for a key.
+// Getter 用于加载某个 key 的数据
 type Getter interface {
 	Get(key string) ([]byte, error)
 }
 
-// A GetterFunc implements Getter with a function.
+// GetterFunc 使用函数实现 Getter
 type GetterFunc func(key string) ([]byte, error)
 
-// Get implements Getter interface function
+// Get 实现 Getter 接口
 func (f GetterFunc) Get(key string) ([]byte, error) {
 	return f(key)
 }
@@ -42,17 +40,17 @@ var (
 	groups = make(map[string]*Group)
 )
 
-// NewGroup create a new instance of Group
+// NewGroup 创建 Group 实例
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	return NewGroupWithOptions(name, cacheBytes, getter, 0, StrategyLRU, 2)
 }
 
-// NewGroupWithTTL create a new instance of Group with default TTL
+// NewGroupWithTTL 创建带默认 TTL 的 Group 实例
 func NewGroupWithTTL(name string, cacheBytes int64, getter Getter, defaultTTL int64) *Group {
 	return NewGroupWithOptions(name, cacheBytes, getter, defaultTTL, StrategyLRU, 2)
 }
 
-// NewGroupWithOptions create a new instance of Group with custom options
+// NewGroupWithOptions 创建带自定义参数的 Group 实例
 func NewGroupWithOptions(name string, cacheBytes int64, getter Getter, defaultTTL int64, strategy CacheStrategy, k int) *Group {
 	if getter == nil {
 		panic("nil Getter")
@@ -73,8 +71,7 @@ func NewGroupWithOptions(name string, cacheBytes int64, getter Getter, defaultTT
 	return g
 }
 
-// GetGroup returns the named group previously created with NewGroup, or
-// nil if there's no such group.
+// GetGroup 返回指定名称的 Group，不存在则返回 nil
 func GetGroup(name string) *Group {
 	mu.RLock()
 	g := groups[name]
@@ -82,12 +79,12 @@ func GetGroup(name string) *Group {
 	return g
 }
 
-// Get value for a key from cache
+// Get 获取 key 对应的缓存值
 func (g *Group) Get(key string) (ByteView, error) {
 	return g.GetWithTTL(key, g.defaultTTL)
 }
 
-// GetWithTTL value for a key from cache with specified TTL
+// GetWithTTL 获取 key 对应的缓存值，并指定 TTL
 func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 	if key == "" {
 		return ByteView{}, fmt.Errorf("key is required")
@@ -101,26 +98,26 @@ func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 	return g.loadWithTTL(key, ttl)
 }
 
-// Set value for a key with specified TTL
+// Set 设置 key 对应的缓存值，并指定 TTL
 func (g *Group) Set(key string, value []byte, ttl int64) error {
 	byteView := ByteView{b: cloneBytes(value)}
 	g.mainCache.add(key, byteView, ttl)
 	return nil
 }
 
-// Delete removes a key from cache
+// Delete 删除缓存中的 key
 func (g *Group) Delete(key string) error {
 	g.mainCache.delete(key)
 	return nil
 }
 
-// Clear removes all keys from cache
+// Clear 清空缓存
 func (g *Group) Clear() error {
 	g.mainCache.clear()
 	return nil
 }
 
-// Stats returns cache statistics
+// Stats 表示缓存统计信息
 type Stats struct {
 	ItemCount  int
 	HitCount   int
@@ -128,12 +125,12 @@ type Stats struct {
 	TotalCount int
 }
 
-// Stats returns cache statistics
+// Stats 返回缓存统计信息
 func (g *Group) Stats() Stats {
 	return g.mainCache.stats()
 }
 
-// GetMulti gets multiple keys from cache
+// GetMulti 批量获取缓存
 func (g *Group) GetMulti(keys []string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 	for _, key := range keys {
@@ -144,7 +141,7 @@ func (g *Group) GetMulti(keys []string) (map[string][]byte, error) {
 	return result, nil
 }
 
-// SetMulti sets multiple keys in cache
+// SetMulti 批量设置缓存
 func (g *Group) SetMulti(values map[string][]byte, ttl int64) error {
 	for key, value := range values {
 		byteView := ByteView{b: cloneBytes(value)}
@@ -153,7 +150,7 @@ func (g *Group) SetMulti(values map[string][]byte, ttl int64) error {
 	return nil
 }
 
-// RegisterPeers registers a PeerPicker for choosing remote peer
+// RegisterPeers 注册用于选择远端节点的 PeerPicker
 func (g *Group) RegisterPeers(peers PeerPicker) {
 	if g.peers != nil {
 		panic("RegisterPeerPicker called more than once")
@@ -162,8 +159,7 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 }
 
 func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
-	// each key is only fetched once (either locally or remotely)
-	// regardless of the number of concurrent callers.
+	// 每个 key 只会被加载一次，无论并发调用有多少
 	viewi, err := g.loader.Do(key, func() (interface{}, error) {
 		if g.peers != nil {
 			if peer, ok := g.peers.PickPeer(key); ok {
@@ -192,7 +188,6 @@ func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 					peerValue, peerErr = result.value, result.err
 
 					if peerErr == nil {
-						// Cache the value with specified TTL
 						g.mainCache.add(key, peerValue, ttl)
 						return peerValue, nil
 					}
@@ -226,14 +221,9 @@ func (g *Group) getLocallyWithTTL(key string, ttl int64) (ByteView, error) {
 }
 
 func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	req := &pb.Request{
-		Group: g.name,
-		Key:   key,
-	}
-	res := &pb.Response{}
-	err := peer.Get(req, res)
+	bytes, err := peer.Get(g.name, key)
 	if err != nil {
 		return ByteView{}, err
 	}
-	return ByteView{b: res.Value}, nil
+	return ByteView{b: bytes}, nil
 }

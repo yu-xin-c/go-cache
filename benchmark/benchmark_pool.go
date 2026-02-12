@@ -1,10 +1,11 @@
 package main
 
 import (
-	"geecache"
 	"log"
 	"testing"
 	"time"
+
+	"mygocache"
 )
 
 var db = map[string]string{
@@ -13,8 +14,8 @@ var db = map[string]string{
 	"Sam":  "567",
 }
 
-func createGroup() *geecache.Group {
-	return geecache.NewGroupWithTTL("scores", 2<<10, geecache.GetterFunc(
+func createGroup() *mygocache.Group {
+	return mygocache.NewGroupWithTTL("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
 			if v, ok := db[key]; ok {

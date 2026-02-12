@@ -1,23 +1,24 @@
 package main
 
 import (
-	"geecache"
 	"log"
 	"testing"
 	"time"
+
+	"mygocache"
 )
 
-var db = map[string]string{
+var benchmarkDB = map[string]string{
 	"Tom":  "630",
 	"Jack": "589",
 	"Sam":  "567",
 }
 
-func createGroup() *geecache.Group {
-	return geecache.NewGroupWithTTL("scores", 2<<10, geecache.GetterFunc(
+func createBenchmarkGroup() *mygocache.Group {
+	return mygocache.NewGroupWithTTL("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
-			if v, ok := db[key]; ok {
+			if v, ok := benchmarkDB[key]; ok {
 				return []byte(v), nil
 			}
 			return nil, nil
@@ -26,17 +27,17 @@ func createGroup() *geecache.Group {
 
 // BenchmarkCacheGet 测试缓存读取性能
 func BenchmarkCacheGet(b *testing.B) {
-	gee := createGroup()
+	gee := createBenchmarkGroup()
 
 	// 预热缓存
-	for k := range db {
+	for k := range benchmarkDB {
 		gee.Get(k)
 	}
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		for k := range db {
+		for k := range benchmarkDB {
 			gee.Get(k)
 		}
 	}
@@ -44,7 +45,7 @@ func BenchmarkCacheGet(b *testing.B) {
 
 // BenchmarkCacheSet 测试缓存写入性能
 func BenchmarkCacheSet(b *testing.B) {
-	gee := createGroup()
+	gee := createBenchmarkGroup()
 
 	b.ResetTimer()
 
@@ -57,17 +58,17 @@ func BenchmarkCacheSet(b *testing.B) {
 
 // BenchmarkConcurrentGet 测试并发读取性能
 func BenchmarkConcurrentGet(b *testing.B) {
-	gee := createGroup()
+	gee := createBenchmarkGroup()
 
 	// 预热缓存
-	for k := range db {
+	for k := range benchmarkDB {
 		gee.Get(k)
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			for k := range db {
+			for k := range benchmarkDB {
 				gee.Get(k)
 			}
 		}
@@ -76,7 +77,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 
 // BenchmarkTTLExpiration 测试 TTL 过期性能
 func BenchmarkTTLExpiration(b *testing.B) {
-	gee := createGroup()
+	gee := createBenchmarkGroup()
 
 	b.ResetTimer()
 

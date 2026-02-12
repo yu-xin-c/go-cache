@@ -222,7 +222,7 @@ func benchmarkCacheScenario(b *testing.B, m MapInterface) {
 	})
 }
 
-func main() {
+func runMapBenchmarks() {
 	// 运行基准测试
 	t := &testing.B{}
 
