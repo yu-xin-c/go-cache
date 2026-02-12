@@ -1,6 +1,6 @@
 # MyGoCache
 
-MyGoCache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Memcached 和 Redis 的设计理念，结合了字节跳动Kietex和hertz的内存管理策略所设计，具有以下特点：
+MyGoCache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Memcached 和 Redis 的设计理念，结合了字节跳动 Kitex 的内存管理策略所设计，融合Go语言协程，轻量的美学，具有以下特点：
 
 ## 核心功能
 
@@ -11,29 +11,29 @@ MyGoCache 是一个基于 Go 语言实现的分布式缓存系统，参考了 Me
 - **LRU-K 缓存**：支持 LRU-K 算法，提高缓存命中率
 - **高性能**：使用协程池和对象池优化并发处理和内存管理
 - **并发安全**：使用 sync.Map 优化并发访问性能
-- **Protocol Buffers**：使用 Protobuf 进行节点间数据序列化，提高传输效率
-- **Kitex 通信**：支持使用 Kitex 框架进行节点间通信，提高性能和可靠性
+- **Kitex 通信**：支持使用 Kitex 框架进行节点间通信，提高性能和可靠性，使用字节同款thrift通信
 
 ## 项目结构
 
 ```
-gee-cache/
 ├── mygocache/           # 核心缓存实现
 │   ├── lru/            # LRU 缓存实现（包含过期管理）
 │   ├── pool/           # 协程池和对象池实现
-│   ├── mygocachepb/     # Protocol Buffers 定义
 │   ├── kitex_gen/      # Kitex 代码生成目录
 │   ├── cache.go        # 缓存封装
 │   ├── mygocache.go     # 核心缓存组实现
-│   ├── http.go         # HTTP 服务实现
 │   ├── kitex.go        # Kitex 服务实现
 │   ├── peers.go        # 节点管理
-│   └── singleflight.go # 并发请求合并
+│   └── singleflight/   # 并发请求合并
 ├── main.go             # 示例程序
 ├── test_ttl.go         # TTL 测试
 ├── test_pool.go        # 协程池和对象池测试
 └── README.md           # 项目文档
 ```
+
+## 文档
+
+- 在本仓库的docs文件夹下，包括了各个优化点的详细文档
 
 ## 优化点
 
@@ -64,8 +64,7 @@ gee-cache/
 
 ### 6. 分布式支持
 - 使用一致性哈希进行节点间负载均衡
-- 使用 Protocol Buffers 进行节点间数据序列化
-- 支持 HTTP 协议进行节点间通信
+- 支持 Kitex 协议进行节点间通信
 
 ### 7. Kitex 通信优化
 - 支持使用 Kitex 框架进行节点间通信，提高性能和可靠性
@@ -104,11 +103,7 @@ gee.Set("key", []byte("value"), 10)
 ### 使用 Kitex 通信
 
 ```bash
-# 启动 HTTP 服务（默认）
 go run main.go -port=8001
-
-# 启动 Kitex 服务
-go run main.go -port=8001 -kitex
 ```
 
 ## 如何运行测试
@@ -119,23 +114,15 @@ go run main.go -port=8001 -kitex
 go test -v
 ```
 
-### 运行 TTL 测试
+### 运行示例
 
 ```bash
-go run test_ttl.go
-```
-
-### 运行协程池和对象池测试
-
-```bash
-go run test_pool.go
+go run main.go -port=8001
 ```
 
 ## 技术栈
 
 - **Go 语言**：使用 Go 1.18+ 特性
-- **Protocol Buffers**：用于节点间数据序列化
-- **HTTP**：用于节点间通信
 - **Kitex**：字节跳动开源的高性能 RPC 框架，用于节点间通信
 - **Thrift**：用于 Kitex 服务的接口定义和序列化
 - **sync 包**：用于并发控制（Mutex、RWMutex、Pool）
@@ -147,7 +134,7 @@ go run test_pool.go
 1. **进一步优化协程池**：根据系统负载动态调整协程数量
 2. **优化一致性哈希**：支持虚拟节点数量的动态调整
 3. **添加监控指标**：收集缓存命中率、过期率等指标
-4. **支持更多序列化格式**：除了 Protobuf，还支持 JSON、MsgPack 等
+4. **支持更多序列化格式**：支持 JSON、MsgPack 等
 5. **添加持久化支持**：支持将缓存数据持久化到磁盘
 
 ## 参考
