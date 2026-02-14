@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"mygocache/pool"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,9 @@ type Cache struct {
 	// 对象池，用于优化内存管理
 	entryPool    *pool.EntryPool
 	heapItemPool *pool.HeapItemPool
+	// 统计信息
+	hits   int64 // 缓存命中次数
+	misses int64 // 缓存未命中次数
 }
 
 // entry 表示缓存中的一个条目
@@ -132,6 +136,7 @@ func (c *Cache) Get(key string) (value Value, ok bool) {
 		}
 		// 未过期，移到队首
 		c.ll.MoveToFront(ele)
+		atomic.AddInt64(&c.hits, 1)
 		return kv.value, true
 	}
 	return
@@ -312,4 +317,25 @@ func (c *Cache) Clear() {
 			c.removeEntry(ele)
 		}
 	}
+}
+
+// Stats 返回缓存的统计信息
+func (c *Cache) Stats() (hits, misses int64) {
+	return atomic.LoadInt64(&c.hits), atomic.LoadInt64(&c.misses)
+}
+
+// ResetStats 重置统计信息
+func (c *Cache) ResetStats() {
+	atomic.StoreInt64(&c.hits, 0)
+	atomic.StoreInt64(&c.misses, 0)
+}
+
+// RecordMiss 记录一次缓存未命中
+func (c *Cache) RecordMiss() {
+	atomic.AddInt64(&c.misses, 1)
+}
+
+// RecordHit 记录一次缓存命中
+func (c *Cache) RecordHit() {
+	atomic.AddInt64(&c.hits, 1)
 }

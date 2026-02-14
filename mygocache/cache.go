@@ -29,11 +29,21 @@ type cache struct {
 // strategy 是缓存策略
 // k 是 LRU-K 的 K 值（仅当 strategy 为 StrategyLRUK 时有效）
 func NewCache(cacheBytes int64, strategy CacheStrategy, k int) *cache {
-	return &cache{
+	c := &cache{
 		cacheBytes: cacheBytes,
 		strategy:   strategy,
 		k:          k,
 	}
+
+	// 立即初始化LRU缓存，避免统计信息丢失
+	switch strategy {
+	case StrategyLRUK:
+		c.lruK = lru.NewLRUK(cacheBytes, k, nil)
+	default: // StrategyLRU
+		c.lru = lru.New(cacheBytes, nil)
+	}
+
+	return c
 }
 
 // 默认缓存创建函数（保持向后兼容）
@@ -116,28 +126,52 @@ func (c *cache) clear() {
 }
 
 func (c *cache) stats() Stats {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	var itemCount, hitCount, missCount int
+	var itemCount int
+	var hits, misses int64
 
 	switch c.strategy {
 	case StrategyLRUK:
 		if c.lruK != nil {
 			itemCount = c.lruK.Len()
-			// TODO: 增加 LRU-K 的命中与未命中统计
+			hits, misses = c.lruK.Stats()
 		}
 	default: // StrategyLRU
 		if c.lru != nil {
 			itemCount = c.lru.Len()
-			// TODO: 增加 LRU 的命中与未命中统计
+			hits, misses = c.lru.Stats()
 		}
 	}
 
 	return Stats{
 		ItemCount:  itemCount,
-		HitCount:   hitCount,
-		MissCount:  missCount,
-		TotalCount: hitCount + missCount,
+		HitCount:   int(hits),
+		MissCount:  int(misses),
+		TotalCount: int(hits + misses),
+	}
+}
+
+func (c *cache) recordMiss() {
+	switch c.strategy {
+	case StrategyLRUK:
+		if c.lruK != nil {
+			c.lruK.RecordMiss()
+		}
+	default: // StrategyLRU
+		if c.lru != nil {
+			c.lru.RecordMiss()
+		}
+	}
+}
+
+func (c *cache) recordHit() {
+	switch c.strategy {
+	case StrategyLRUK:
+		if c.lruK != nil {
+			c.lruK.RecordHit()
+		}
+	default: // StrategyLRU
+		if c.lru != nil {
+			c.lru.RecordHit()
+		}
 	}
 }
