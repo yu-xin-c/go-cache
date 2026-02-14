@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"mygocache/pool"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +34,10 @@ type LRUCache struct {
 
 	// 缓存操作的互斥锁（主要用于nbytes和链表操作）
 	mu sync.Mutex
+
+	// 统计信息
+	hits   int64 // 缓存命中次数
+	misses int64 // 缓存未命中次数
 }
 
 // entry 表示缓存中的一个条目
@@ -191,6 +196,7 @@ func (c *LRUCache) Get(key string) (value Value, ok bool) {
 		// 未过期，移到队首并更新访问时间
 		c.ll.MoveToFront(listEle)
 		kv.lastAccess = time.Now().Unix()
+		atomic.AddInt64(&c.hits, 1)
 		return kv.value, true
 	}
 
@@ -405,4 +411,25 @@ func (c *LRUCache) Clear() {
 			c.mu.Unlock()
 		}
 	}
+}
+
+// Stats 返回缓存的统计信息
+func (c *LRUCache) Stats() (hits, misses int64) {
+	return atomic.LoadInt64(&c.hits), atomic.LoadInt64(&c.misses)
+}
+
+// ResetStats 重置统计信息
+func (c *LRUCache) ResetStats() {
+	atomic.StoreInt64(&c.hits, 0)
+	atomic.StoreInt64(&c.misses, 0)
+}
+
+// RecordMiss 记录一次缓存未命中
+func (c *LRUCache) RecordMiss() {
+	atomic.AddInt64(&c.misses, 1)
+}
+
+// RecordHit 记录一次缓存命中
+func (c *LRUCache) RecordHit() {
+	atomic.AddInt64(&c.hits, 1)
 }

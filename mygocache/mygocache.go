@@ -95,6 +95,8 @@ func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 		return v, nil
 	}
 
+	// 缓存未命中，通过 singleflight 加载
+	// 统计信息将在 loadWithTTL 中根据 shared 标志记录
 	return g.loadWithTTL(key, ttl)
 }
 
@@ -136,6 +138,9 @@ func (g *Group) GetMulti(keys []string) (map[string][]byte, error) {
 	for _, key := range keys {
 		if v, ok := g.mainCache.get(key); ok {
 			result[key] = v.ByteSlice()
+		} else {
+			// 记录未命中
+			g.mainCache.recordMiss()
 		}
 	}
 	return result, nil
@@ -160,7 +165,8 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 
 func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 	// 每个 key 只会被加载一次，无论并发调用有多少
-	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+	// shared 标志表示结果是否是共享的（即是否等待了其他请求）
+	viewi, err, shared := g.loader.Do(key, func() (interface{}, error) {
 		if g.peers != nil {
 			if peer, ok := g.peers.PickPeer(key); ok {
 				// 使用协程池从远程节点获取数据
@@ -200,6 +206,16 @@ func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 	})
 
 	if err == nil {
+		// 根据 shared 标志记录统计信息
+		// shared=false: 第一个请求，真正加载了数据 -> miss
+		// shared=true: 后续请求，共享了结果 -> hit
+		if shared {
+			g.mainCache.recordHit()
+			log.Println("[GeeCache] singleflight hit (shared)")
+		} else {
+			g.mainCache.recordMiss()
+			log.Println("[GeeCache] singleflight miss (first)")
+		}
 		return viewi.(ByteView), nil
 	}
 	return
