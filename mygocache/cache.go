@@ -3,6 +3,7 @@ package mygocache
 import (
 	"hash/fnv"
 	"mygocache/lru"
+	"sync/atomic"
 )
 
 // CacheStrategy 定义缓存策略类型
@@ -31,6 +32,10 @@ type cacheShard struct {
 type cache struct {
 	shards    []cacheShard
 	shardMask uint32 // shardCount - 1，用于位运算取模
+
+	// 全局统计计数器（独立于分片，避免 recordMiss/recordHit 只操作单一分片的问题）
+	hitCount  int64
+	missCount int64
 }
 
 // fnvHash 计算 key 的 FNV-1a 哈希值
@@ -147,60 +152,38 @@ func (c *cache) clear() {
 
 func (c *cache) stats() Stats {
 	var totalItems int
-	var totalHits, totalMisses int64
 
+	// 遍历分片获取 item 数量
 	for i := range c.shards {
 		s := &c.shards[i]
 		switch s.strategy {
 		case StrategyLRUK:
 			if s.lruK != nil {
 				totalItems += s.lruK.Len()
-				h, m := s.lruK.Stats()
-				totalHits += h
-				totalMisses += m
 			}
 		default:
 			if s.lru != nil {
 				totalItems += s.lru.Len()
-				h, m := s.lru.Stats()
-				totalHits += h
-				totalMisses += m
 			}
 		}
 	}
 
+	// 使用全局计数器获取 hit/miss 统计
+	hits := atomic.LoadInt64(&c.hitCount)
+	misses := atomic.LoadInt64(&c.missCount)
+
 	return Stats{
 		ItemCount:  totalItems,
-		HitCount:   int(totalHits),
-		MissCount:  int(totalMisses),
-		TotalCount: int(totalHits + totalMisses),
+		HitCount:   int(hits),
+		MissCount:  int(misses),
+		TotalCount: int(hits + misses),
 	}
 }
 
 func (c *cache) recordMiss() {
-	s := &c.shards[0]
-	switch s.strategy {
-	case StrategyLRUK:
-		if s.lruK != nil {
-			s.lruK.RecordMiss()
-		}
-	default:
-		if s.lru != nil {
-			s.lru.RecordMiss()
-		}
-	}
+	atomic.AddInt64(&c.missCount, 1)
 }
 
 func (c *cache) recordHit() {
-	s := &c.shards[0]
-	switch s.strategy {
-	case StrategyLRUK:
-		if s.lruK != nil {
-			s.lruK.RecordHit()
-		}
-	default: // StrategyLRU
-		if s.lru != nil {
-			s.lru.RecordHit()
-		}
-	}
+	atomic.AddInt64(&c.hitCount, 1)
 }

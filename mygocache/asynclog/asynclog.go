@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,9 @@ type AsyncLogger struct {
 	done   chan struct{}
 	logger *log.Logger
 	wg     sync.WaitGroup
+
+	// 统计信息
+	droppedCount int64 // 丢弃的日志数量
 }
 
 var (
@@ -108,6 +112,7 @@ func (al *AsyncLogger) Printf(format string, v ...interface{}) {
 	case al.ch <- msg:
 	default:
 		// 缓冲区满，丢弃（高压情况下保护吞吐）
+		atomic.AddInt64(&al.droppedCount, 1)
 	}
 }
 
@@ -117,7 +122,13 @@ func (al *AsyncLogger) Println(v ...interface{}) {
 	select {
 	case al.ch <- msg:
 	default:
+		atomic.AddInt64(&al.droppedCount, 1)
 	}
+}
+
+// DroppedCount 返回丢弃的日志数量
+func (al *AsyncLogger) DroppedCount() int64 {
+	return atomic.LoadInt64(&al.droppedCount)
 }
 
 // Close 关闭异步日志，刷完缓冲区
@@ -151,4 +162,12 @@ func Close() {
 	if defaultLogger != nil {
 		defaultLogger.Close()
 	}
+}
+
+// DroppedCount 返回全局异步日志丢弃的日志数量
+func DroppedCount() int64 {
+	if defaultLogger != nil {
+		return defaultLogger.DroppedCount()
+	}
+	return 0
 }

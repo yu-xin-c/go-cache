@@ -12,8 +12,8 @@ import (
 // ErrKeyNotFound 表示 key 不存在（负缓存命中时返回）
 var ErrKeyNotFound = errors.New("key not found")
 
-// negativeCacheTTL 负缓存的 TTL（秒），防止不存在的 key 反复穿透
-const negativeCacheTTL int64 = 10
+// DefaultNegativeCacheTTL 默认负缓存的 TTL（秒），防止不存在的 key 反复穿透
+const DefaultNegativeCacheTTL int64 = 10
 
 // Group 表示缓存命名空间与其数据加载逻辑
 type Group struct {
@@ -25,6 +25,8 @@ type Group struct {
 	loader *singleflight.Group
 	// 默认 TTL（秒），0 表示永不过期
 	defaultTTL int64
+	// 负缓存 TTL（秒），防止不存在的 key 反复穿透
+	negativeCacheTTL int64
 	// 并发操作使用的协程池
 	goroutinePool *pool.GoroutinePool
 }
@@ -65,15 +67,21 @@ func NewGroupWithOptions(name string, cacheBytes int64, getter Getter, defaultTT
 	mu.Lock()
 	defer mu.Unlock()
 	g := &Group{
-		name:          name,
-		getter:        getter,
-		mainCache:     NewCache(cacheBytes, strategy, k),
-		loader:        &singleflight.Group{},
-		defaultTTL:    defaultTTL,
-		goroutinePool: pool.NewGoroutinePool(10, 500, 1000), // 动态伸缩：[10, 500] worker，队列容量 1000
+		name:             name,
+		getter:           getter,
+		mainCache:        NewCache(cacheBytes, strategy, k),
+		loader:           &singleflight.Group{},
+		defaultTTL:       defaultTTL,
+		negativeCacheTTL: DefaultNegativeCacheTTL,
+		goroutinePool:    pool.NewGoroutinePool(10, 500, 1000), // 动态伸缩：[10, 500] worker，队列容量 1000
 	}
 	groups[name] = g
 	return g
+}
+
+// SetNegativeCacheTTL 设置负缓存 TTL
+func (g *Group) SetNegativeCacheTTL(ttl int64) {
+	g.negativeCacheTTL = ttl
 }
 
 // GetGroup 返回指定名称的 Group，不存在则返回 nil
@@ -220,8 +228,8 @@ func (g *Group) getLocallyWithTTL(key string, ttl int64) (ByteView, error) {
 	bytes, err := g.getter.Get(key)
 	if err != nil {
 		// 负缓存：缓存空值，短 TTL 防穿透
-		g.populateCache(key, ByteView{}, negativeCacheTTL)
-		asynclog.Printf("[GeeCache] negative cache set for key=%s ttl=%ds", key, negativeCacheTTL)
+		g.populateCache(key, ByteView{}, g.negativeCacheTTL)
+		asynclog.Printf("[GeeCache] negative cache set for key=%s ttl=%ds", key, g.negativeCacheTTL)
 		return ByteView{}, err
 	}
 	value := ByteView{b: cloneBytes(bytes)}
