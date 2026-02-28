@@ -17,7 +17,7 @@ type LRUCache struct {
 
 	// LRU-K 相关
 	k       int      // K 值，表示需要访问 K 次才进入缓存
-	history sync.Map // 键到访问时间戳列表的映射 (string -> []int64)
+	history sync.Map // 键到访问历史的映射 (string -> *historyEntry)
 
 	// 优先级队列（最小堆），用于过期管理
 	heap    []*pool.HeapItem // 最小堆数组
@@ -46,6 +46,12 @@ type lruEntry struct {
 	value      Value  // 值
 	expiresAt  int64  // 过期时间戳，0 表示永不过期
 	lastAccess int64  // 最后访问时间戳
+}
+
+// historyEntry 表示一个 key 的访问历史，内置锁保证并发安全
+type historyEntry struct {
+	mu sync.Mutex
+	ts []int64
 }
 
 // NewLRUK 创建一个新的 LRU-K 缓存实例
@@ -120,26 +126,20 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 			c.heapMu.Unlock()
 		}
 	} else {
-		// 检查访问历史
-		timestamps, exists := c.history.Load(key)
-		var ts []int64
-		if exists {
-			ts = timestamps.([]int64)
-		}
-
-		// 添加当前访问时间戳
+		// 获取或创建访问历史
 		currentTime := time.Now().Unix()
-		ts = append(ts, currentTime)
+		actual, _ := c.history.LoadOrStore(key, &historyEntry{})
+		he := actual.(*historyEntry)
 
+		he.mu.Lock()
+		he.ts = append(he.ts, currentTime)
 		// 只保留最近的 K 个时间戳
-		if len(ts) > c.k {
-			ts = ts[len(ts)-c.k:]
+		if len(he.ts) > c.k {
+			he.ts = he.ts[len(he.ts)-c.k:]
 		}
-
-		c.history.Store(key, ts)
-
-		// 检查是否达到 K 次访问
-		shouldCache := !exists || len(ts) >= c.k
+		// 检查是否达到 K 次访问（访问次数 >= K）
+		shouldCache := len(he.ts) >= c.k
+		he.mu.Unlock()
 
 		if shouldCache {
 			c.mu.Lock()
@@ -168,7 +168,7 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 
 			// 清理超出容量的项
 			for c.maxBytes != 0 && c.maxBytes < c.nbytes {
-				c.RemoveOldest()
+				c.removeOldest()
 			}
 			c.mu.Unlock()
 		}
@@ -201,21 +201,17 @@ func (c *LRUCache) Get(key string) (value Value, ok bool) {
 	}
 
 	// 缓存未命中，记录访问历史
-	timestamps, exists := c.history.Load(key)
-	var ts []int64
-	if exists {
-		ts = timestamps.([]int64)
-	}
-
 	currentTime := time.Now().Unix()
-	ts = append(ts, currentTime)
+	actual, _ := c.history.LoadOrStore(key, &historyEntry{})
+	he := actual.(*historyEntry)
 
+	he.mu.Lock()
+	he.ts = append(he.ts, currentTime)
 	// 只保留最近的 K 个时间戳
-	if len(ts) > c.k {
-		ts = ts[len(ts)-c.k:]
+	if len(he.ts) > c.k {
+		he.ts = he.ts[len(he.ts)-c.k:]
 	}
-
-	c.history.Store(key, ts)
+	he.mu.Unlock()
 
 	return nil, false
 }
@@ -224,7 +220,11 @@ func (c *LRUCache) Get(key string) (value Value, ok bool) {
 func (c *LRUCache) RemoveOldest() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.removeOldest()
+}
 
+// removeOldest 内部方法，调用方必须已持有 c.mu
+func (c *LRUCache) removeOldest() {
 	ele := c.ll.Back()
 	if ele != nil {
 		c.removeEntry(ele)
