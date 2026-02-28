@@ -20,7 +20,8 @@ type Cache struct {
 	// 当条目被删除时执行的回调函数
 	OnEvicted func(key string, value Value)
 	// 过期协程的停止信号
-	stopChan chan struct{}
+	stopChan  chan struct{}
+	closeOnce sync.Once // 保证 Close 幂等
 	// 堆操作的互斥锁
 	heapMu sync.Mutex
 	// 对象池，用于优化内存管理
@@ -63,9 +64,11 @@ func New(maxBytes int64, onEvicted func(string, Value)) *Cache {
 	return c
 }
 
-// Close 停止过期检查协程
+// Close 停止过期检查协程（幂等，可多次调用）
 func (c *Cache) Close() {
-	close(c.stopChan)
+	c.closeOnce.Do(func() {
+		close(c.stopChan)
+	})
 }
 
 // Add 向缓存中添加一个值，带有可选的过期时间

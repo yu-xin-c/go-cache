@@ -16,14 +16,14 @@ var db = map[string]string{
 }
 
 func createGroup() *mygocache.Group {
-	return mygocache.NewGroupWithOptions("scores", 2<<10, mygocache.GetterFunc(
+	return mygocache.NewGroupWithTTL("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
 			if v, ok := db[key]; ok {
 				return []byte(v), nil
 			}
 			return nil, fmt.Errorf("%s not exist", key)
-		}), 0, mygocache.StrategyLRUK, 2)
+		}), 0)
 }
 
 func startCacheServer(addr string, addrs []string, gee *mygocache.Group) {

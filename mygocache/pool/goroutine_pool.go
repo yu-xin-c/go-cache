@@ -1,11 +1,15 @@
 package pool
 
 import (
+	"errors"
 	"mygocache/asynclog"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// ErrPoolClosed 表示协程池已关闭
+var ErrPoolClosed = errors.New("goroutine pool is closed")
 
 // GoroutinePool 自适应协程池
 // 根据队列深度和 worker 繁忙率动态调整协程数量：
@@ -92,15 +96,15 @@ func (p *GoroutinePool) Submit(task func()) error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil
+		return ErrPoolClosed
 	}
-	p.mu.Unlock()
-
-	// 非阻塞提交
+	// 持锁期间完成 channel 发送，防止与 Close() 的竞态
 	select {
 	case p.tasks <- task:
+		p.mu.Unlock()
 		return nil
 	default:
+		p.mu.Unlock()
 		// 队列已满，直接起临时协程执行（保证不丢任务）
 		go task()
 		return nil
@@ -191,10 +195,9 @@ func (p *GoroutinePool) Close() {
 		return
 	}
 	p.closed = true
-	p.mu.Unlock()
-
 	close(p.done)  // 停止 monitor
 	close(p.tasks) // 通知所有 worker 退出
+	p.mu.Unlock()
 	p.wg.Wait()
 }
 

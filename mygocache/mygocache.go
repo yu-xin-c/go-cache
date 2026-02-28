@@ -51,12 +51,12 @@ var (
 
 // NewGroup 创建 Group 实例
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
-	return NewGroupWithOptions(name, cacheBytes, getter, 0, StrategyLRU, 2)
+	return NewGroupWithOptions(name, cacheBytes, getter, 0, StrategyLRUK, 2)
 }
 
 // NewGroupWithTTL 创建带默认 TTL 的 Group 实例
 func NewGroupWithTTL(name string, cacheBytes int64, getter Getter, defaultTTL int64) *Group {
-	return NewGroupWithOptions(name, cacheBytes, getter, defaultTTL, StrategyLRU, 2)
+	return NewGroupWithOptions(name, cacheBytes, getter, defaultTTL, StrategyLRUK, 2)
 }
 
 // NewGroupWithOptions 创建带自定义参数的 Group 实例
@@ -107,9 +107,11 @@ func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 		if v.Len() == 0 {
 			// 负缓存命中：key 不存在，短时间内不再穿透
 			asynclog.Println("[GeeCache] negative cache hit")
+			g.mainCache.recordHit()
 			return ByteView{}, ErrKeyNotFound
 		}
 		asynclog.Println("[GeeCache] hit")
+		g.mainCache.recordHit()
 		return v, nil
 	}
 
@@ -120,7 +122,7 @@ func (g *Group) GetWithTTL(key string, ttl int64) (ByteView, error) {
 // Set 设置 key 对应的缓存值，并指定 TTL
 func (g *Group) Set(key string, value []byte, ttl int64) error {
 	byteView := ByteView{b: cloneBytes(value)}
-	g.mainCache.add(key, byteView, ttl)
+	g.mainCache.directAdd(key, byteView, ttl)
 	return nil
 }
 
@@ -155,6 +157,7 @@ func (g *Group) GetMulti(keys []string) (map[string][]byte, error) {
 	for _, key := range keys {
 		if v, ok := g.mainCache.get(key); ok {
 			result[key] = v.ByteSlice()
+			g.mainCache.recordHit()
 		} else {
 			g.mainCache.recordMiss()
 		}
@@ -190,17 +193,21 @@ func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 					err   error
 				}
 				resultCh := make(chan result, 1)
-				g.goroutinePool.Submit(func() {
+				submitErr := g.goroutinePool.Submit(func() {
 					peerValue, peerErr := g.getFromPeer(peer, key)
 					resultCh <- result{peerValue, peerErr}
 				})
-				res := <-resultCh
+				if submitErr != nil {
+					asynclog.Printf("[GeeCache] pool submit failed: %v, falling back to local", submitErr)
+				} else {
+					res := <-resultCh
 
-				if res.err == nil {
-					g.mainCache.add(key, res.value, ttl)
-					return res.value, nil
+					if res.err == nil {
+						g.mainCache.add(key, res.value, ttl)
+						return res.value, nil
+					}
+					asynclog.Println("[GeeCache] Failed to get from peer", res.err)
 				}
-				asynclog.Println("[GeeCache] Failed to get from peer", res.err)
 			}
 		}
 
@@ -209,11 +216,13 @@ func (g *Group) loadWithTTL(key string, ttl int64) (value ByteView, err error) {
 
 	if err == nil {
 		if shared {
+			// 共享结果：对该请求而言命中了 singleflight 缓存，计为 hit
 			g.mainCache.recordHit()
 			asynclog.Println("[GeeCache] singleflight hit (shared)")
 		} else {
+			// 首次加载：缓存未命中
 			g.mainCache.recordMiss()
-			asynclog.Println("[GeeCache] singleflight miss (first)")
+			asynclog.Println("[GeeCache] singleflight miss (first load)")
 		}
 		return viewi.(ByteView), nil
 	}

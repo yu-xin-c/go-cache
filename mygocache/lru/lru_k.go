@@ -27,7 +27,8 @@ type LRUCache struct {
 	OnEvicted func(key string, value Value)
 
 	// 过期协程的停止信号
-	stopChan chan struct{}
+	stopChan  chan struct{}
+	closeOnce sync.Once // 保证 Close 幂等
 
 	// 堆操作的互斥锁
 	heapMu sync.Mutex
@@ -80,9 +81,11 @@ func NewLRUK(maxBytes int64, k int, onEvicted func(string, Value)) *LRUCache {
 	return c
 }
 
-// Close 停止过期检查协程
+// Close 停止过期检查协程（幂等，可多次调用）
 func (c *LRUCache) Close() {
-	close(c.stopChan)
+	c.closeOnce.Do(func() {
+		close(c.stopChan)
+	})
 }
 
 // Add 向缓存中添加一个值，带有可选的过期时间
@@ -96,83 +99,160 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 	}
 
 	// 检查是否已存在
-	if ele, ok := c.cache.Load(key); ok {
+	if _, ok := c.cache.Load(key); ok {
 		c.mu.Lock()
-		defer c.mu.Unlock()
+		// TOCTOU 修复：获取锁后重新验证 key 是否仍存在
+		ele, ok := c.cache.Load(key)
+		if !ok {
+			c.mu.Unlock()
+			// key 已被淘汰，走新增路径
+		} else {
+			// 更新现有条目
+			listEle := ele.(*list.Element)
+			c.ll.MoveToFront(listEle)
+			kv := listEle.Value.(*lruEntry)
+			c.nbytes += int64(value.Len()) - int64(kv.value.Len())
+			kv.value = value
+			kv.lastAccess = time.Now().Unix()
 
-		// 更新现有条目
-		listEle := ele.(*list.Element)
-		c.ll.MoveToFront(listEle)
-		kv := listEle.Value.(*lruEntry)
-		c.nbytes += int64(value.Len()) - int64(kv.value.Len())
-		kv.value = value
-		kv.lastAccess = time.Now().Unix()
+			// 更新过期时间
+			oldExpiresAt := kv.expiresAt
+			kv.expiresAt = expiresAt
 
-		// 更新过期时间
-		oldExpiresAt := kv.expiresAt
-		kv.expiresAt = expiresAt
-
-		// 如果过期时间发生变化，更新堆
-		if oldExpiresAt > 0 || expiresAt > 0 {
-			c.heapMu.Lock()
-			if oldExpiresAt > 0 {
-				// 从堆中移除
-				c.removeFromHeap(key)
-			}
-			if expiresAt > 0 {
-				// 添加到堆中
-				c.addToHeap(key, expiresAt)
-			}
-			c.heapMu.Unlock()
-		}
-	} else {
-		// 获取或创建访问历史
-		currentTime := time.Now().Unix()
-		actual, _ := c.history.LoadOrStore(key, &historyEntry{})
-		he := actual.(*historyEntry)
-
-		he.mu.Lock()
-		he.ts = append(he.ts, currentTime)
-		// 只保留最近的 K 个时间戳
-		if len(he.ts) > c.k {
-			he.ts = he.ts[len(he.ts)-c.k:]
-		}
-		// 检查是否达到 K 次访问（访问次数 >= K）
-		shouldCache := len(he.ts) >= c.k
-		he.mu.Unlock()
-
-		if shouldCache {
-			c.mu.Lock()
-			// 再次检查，避免并发问题
-			if _, ok := c.cache.Load(key); ok {
-				c.mu.Unlock()
-				return
-			}
-
-			// 添加新条目到缓存
-			ele := c.ll.PushFront(&lruEntry{
-				key:        key,
-				value:      value,
-				expiresAt:  expiresAt,
-				lastAccess: currentTime,
-			})
-			c.cache.Store(key, ele)
-			c.nbytes += int64(len(key)) + int64(value.Len())
-
-			// 如果有过期时间，添加到堆中
-			if expiresAt > 0 {
+			// 如果过期时间发生变化，更新堆
+			if oldExpiresAt > 0 || expiresAt > 0 {
 				c.heapMu.Lock()
-				c.addToHeap(key, expiresAt)
+				if oldExpiresAt > 0 {
+					c.removeFromHeap(key)
+				}
+				if expiresAt > 0 {
+					c.addToHeap(key, expiresAt)
+				}
 				c.heapMu.Unlock()
 			}
-
-			// 清理超出容量的项
-			for c.maxBytes != 0 && c.maxBytes < c.nbytes {
-				c.removeOldest()
-			}
 			c.mu.Unlock()
+			return
 		}
 	}
+
+	// 新增路径：获取或创建访问历史
+	currentTime := time.Now().Unix()
+	actual, _ := c.history.LoadOrStore(key, &historyEntry{})
+	he := actual.(*historyEntry)
+
+	he.mu.Lock()
+	he.ts = append(he.ts, currentTime)
+	// 只保留最近的 K 个时间戳
+	if len(he.ts) > c.k {
+		he.ts = he.ts[len(he.ts)-c.k:]
+	}
+	// 检查是否达到 K 次访问（访问次数 >= K）
+	shouldCache := len(he.ts) >= c.k
+	he.mu.Unlock()
+
+	if shouldCache {
+		// 已达 K 次访问，清理 history 防止内存泄漏
+		c.history.Delete(key)
+
+		c.mu.Lock()
+		// 再次检查，避免并发问题
+		if _, ok := c.cache.Load(key); ok {
+			c.mu.Unlock()
+			return
+		}
+
+		// 添加新条目到缓存
+		ele := c.ll.PushFront(&lruEntry{
+			key:        key,
+			value:      value,
+			expiresAt:  expiresAt,
+			lastAccess: currentTime,
+		})
+		c.cache.Store(key, ele)
+		c.nbytes += int64(len(key)) + int64(value.Len())
+
+		// 如果有过期时间，添加到堆中
+		if expiresAt > 0 {
+			c.heapMu.Lock()
+			c.addToHeap(key, expiresAt)
+			c.heapMu.Unlock()
+		}
+
+		// 清理超出容量的项
+		for c.maxBytes != 0 && c.maxBytes < c.nbytes {
+			c.removeOldest()
+		}
+		c.mu.Unlock()
+	}
+}
+
+// DirectAdd 直接将值加入缓存，跳过 LRU-K 的 K 次访问历史检查。
+// 用于显式 Set 操作，确保写入的值立即可读。
+func (c *LRUCache) DirectAdd(key string, value Value, ttl int64) {
+	var expiresAt int64
+	if ttl > 0 {
+		expiresAt = time.Now().Unix() + ttl
+	}
+
+	currentTime := time.Now().Unix()
+
+	// 检查是否已存在
+	if _, ok := c.cache.Load(key); ok {
+		c.mu.Lock()
+		ele, ok := c.cache.Load(key)
+		if !ok {
+			c.mu.Unlock()
+		} else {
+			listEle := ele.(*list.Element)
+			c.ll.MoveToFront(listEle)
+			kv := listEle.Value.(*lruEntry)
+			c.nbytes += int64(value.Len()) - int64(kv.value.Len())
+			kv.value = value
+			kv.lastAccess = currentTime
+
+			oldExpiresAt := kv.expiresAt
+			kv.expiresAt = expiresAt
+			if oldExpiresAt > 0 || expiresAt > 0 {
+				c.heapMu.Lock()
+				if oldExpiresAt > 0 {
+					c.removeFromHeap(key)
+				}
+				if expiresAt > 0 {
+					c.addToHeap(key, expiresAt)
+				}
+				c.heapMu.Unlock()
+			}
+			c.mu.Unlock()
+			return
+		}
+	}
+
+	// 直接添加到缓存，不检查历史访问次数
+	c.mu.Lock()
+	if _, ok := c.cache.Load(key); ok {
+		c.mu.Unlock()
+		return
+	}
+
+	ele := c.ll.PushFront(&lruEntry{
+		key:        key,
+		value:      value,
+		expiresAt:  expiresAt,
+		lastAccess: currentTime,
+	})
+	c.cache.Store(key, ele)
+	c.nbytes += int64(len(key)) + int64(value.Len())
+
+	if expiresAt > 0 {
+		c.heapMu.Lock()
+		c.addToHeap(key, expiresAt)
+		c.heapMu.Unlock()
+	}
+
+	for c.maxBytes != 0 && c.maxBytes < c.nbytes {
+		c.removeOldest()
+	}
+	c.mu.Unlock()
 }
 
 // Get 查找并返回缓存中键对应的值（惰性过期）
@@ -180,24 +260,31 @@ func (c *LRUCache) Add(key string, value Value, ttl int64) {
 // 返回值和是否找到的标志
 func (c *LRUCache) Get(key string) (value Value, ok bool) {
 	// 检查缓存
-	if ele, ok := c.cache.Load(key); ok {
+	if _, ok := c.cache.Load(key); ok {
 		c.mu.Lock()
-		defer c.mu.Unlock()
+		// TOCTOU 修复：获取锁后重新验证 key 是否仍存在
+		ele, ok := c.cache.Load(key)
+		if !ok {
+			c.mu.Unlock()
+			// key 已被淘汰，走未命中路径
+		} else {
+			listEle := ele.(*list.Element)
+			kv := listEle.Value.(*lruEntry)
+			// 检查是否过期（惰性过期）
+			if kv.expiresAt > 0 && kv.expiresAt < time.Now().Unix() {
+				// 过期，删除该项
+				c.removeEntry(listEle)
+				c.mu.Unlock()
+				return nil, false
+			}
 
-		listEle := ele.(*list.Element)
-		kv := listEle.Value.(*lruEntry)
-		// 检查是否过期（惰性过期）
-		if kv.expiresAt > 0 && kv.expiresAt < time.Now().Unix() {
-			// 过期，删除该项
-			c.removeEntry(listEle)
-			return nil, false
+			// 未过期，移到队首并更新访问时间
+			c.ll.MoveToFront(listEle)
+			kv.lastAccess = time.Now().Unix()
+			atomic.AddInt64(&c.hits, 1)
+			c.mu.Unlock()
+			return kv.value, true
 		}
-
-		// 未过期，移到队首并更新访问时间
-		c.ll.MoveToFront(listEle)
-		kv.lastAccess = time.Now().Unix()
-		atomic.AddInt64(&c.hits, 1)
-		return kv.value, true
 	}
 
 	// 缓存未命中，记录访问历史
@@ -213,6 +300,7 @@ func (c *LRUCache) Get(key string) (value Value, ok bool) {
 	}
 	he.mu.Unlock()
 
+	atomic.AddInt64(&c.misses, 1)
 	return nil, false
 }
 
@@ -337,10 +425,18 @@ func (c *LRUCache) expirationLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	// history 清理计数器：每 300 次 tick（约 30 秒）清理一次
+	historyCleanCounter := 0
+
 	for {
 		select {
 		case <-ticker.C:
 			c.checkExpiration()
+			historyCleanCounter++
+			if historyCleanCounter >= 300 {
+				historyCleanCounter = 0
+				c.cleanStaleHistory(60) // 清理 60 秒未访问的 history
+			}
 		case <-c.stopChan:
 			return
 		}
@@ -373,6 +469,26 @@ func (c *LRUCache) checkExpiration() {
 	c.heapMu.Unlock()
 }
 
+// cleanStaleHistory 清理超过 maxAgeSec 秒未访问的 history 条目，防止内存泄漏
+func (c *LRUCache) cleanStaleHistory(maxAgeSec int64) {
+	now := time.Now().Unix()
+	c.history.Range(func(key, value interface{}) bool {
+		// 如果 key 已经在缓存中，跳过（由 removeEntry 清理）
+		if _, ok := c.cache.Load(key); ok {
+			return true
+		}
+		he := value.(*historyEntry)
+		he.mu.Lock()
+		if len(he.ts) == 0 || now-he.ts[len(he.ts)-1] > maxAgeSec {
+			he.mu.Unlock()
+			c.history.Delete(key)
+		} else {
+			he.mu.Unlock()
+		}
+		return true
+	})
+}
+
 // Len 返回缓存中的条目数
 func (c *LRUCache) Len() int {
 	c.mu.Lock()
@@ -382,9 +498,12 @@ func (c *LRUCache) Len() int {
 
 // Remove 删除指定键的条目
 func (c *LRUCache) Remove(key string) {
-	if ele, ok := c.cache.Load(key); ok {
+	if _, ok := c.cache.Load(key); ok {
 		c.mu.Lock()
-		c.removeEntry(ele.(*list.Element))
+		// TOCTOU 修复：获取锁后重新验证
+		if ele, ok := c.cache.Load(key); ok {
+			c.removeEntry(ele.(*list.Element))
+		}
 		c.mu.Unlock()
 	}
 }
@@ -405,11 +524,12 @@ func (c *LRUCache) Clear() {
 
 	// 处理通道中的所有键
 	for key := range keyChan {
+		c.mu.Lock()
+		// TOCTOU 修复：获取锁后重新验证
 		if ele, ok := c.cache.Load(key); ok {
-			c.mu.Lock()
 			c.removeEntry(ele.(*list.Element))
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 	}
 }
 

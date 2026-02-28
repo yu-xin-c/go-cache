@@ -3,6 +3,7 @@ package mygocache
 import (
 	"hash/fnv"
 	"mygocache/lru"
+	"sync"
 	"sync/atomic"
 )
 
@@ -21,11 +22,12 @@ const defaultShardCount = 32
 
 // cacheShard 是缓存的一个分片，拥有独立的 LRU 实例
 type cacheShard struct {
-	lru        *lru.Cache
-	lruK       *lru.LRUCache
+	mu       sync.Mutex // 保护标准 LRU（非并发安全）的并发访问
+	lru      *lru.Cache
+	lruK     *lru.LRUCache
 	cacheBytes int64
-	strategy   CacheStrategy
-	k          int
+	strategy CacheStrategy
+	k        int
 }
 
 // cache 是分片缓存，将 key 哈希到不同的 shard 以降低锁竞争
@@ -92,7 +94,23 @@ func (c *cache) add(key string, value ByteView, ttl int64) {
 	case StrategyLRUK:
 		s.lruK.Add(key, value, ttl)
 	default:
+		s.mu.Lock()
 		s.lru.Add(key, value, ttl)
+		s.mu.Unlock()
+	}
+}
+
+// directAdd 直接写入缓存，跳过 LRU-K 的 K 次访问门槛
+func (c *cache) directAdd(key string, value ByteView, ttl int64) {
+	s := c.getShard(key)
+
+	switch s.strategy {
+	case StrategyLRUK:
+		s.lruK.DirectAdd(key, value, ttl)
+	default:
+		s.mu.Lock()
+		s.lru.Add(key, value, ttl)
+		s.mu.Unlock()
 	}
 }
 
@@ -111,7 +129,10 @@ func (c *cache) get(key string) (value ByteView, ok bool) {
 		if s.lru == nil {
 			return
 		}
-		if v, ok := s.lru.Get(key); ok {
+		s.mu.Lock()
+		v, ok := s.lru.Get(key)
+		s.mu.Unlock()
+		if ok {
 			return v.(ByteView), ok
 		}
 	}
@@ -129,7 +150,9 @@ func (c *cache) delete(key string) {
 		}
 	default:
 		if s.lru != nil {
+			s.mu.Lock()
 			s.lru.Remove(key)
+			s.mu.Unlock()
 		}
 	}
 }
@@ -144,7 +167,9 @@ func (c *cache) clear() {
 			}
 		default:
 			if s.lru != nil {
+				s.mu.Lock()
 				s.lru.Clear()
+				s.mu.Unlock()
 			}
 		}
 	}
@@ -163,7 +188,9 @@ func (c *cache) stats() Stats {
 			}
 		default:
 			if s.lru != nil {
+				s.mu.Lock()
 				totalItems += s.lru.Len()
+				s.mu.Unlock()
 			}
 		}
 	}

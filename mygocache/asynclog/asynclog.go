@@ -17,6 +17,10 @@ type AsyncLogger struct {
 	logger *log.Logger
 	wg     sync.WaitGroup
 
+	// 关闭状态
+	closed    int32    // 原子标志，防止 close 后继续写入 channel
+	closeOnce sync.Once // 保证 Close 幂等
+
 	// 统计信息
 	droppedCount int64 // 丢弃的日志数量
 }
@@ -57,21 +61,12 @@ func (al *AsyncLogger) drain() {
 
 	for {
 		select {
-		case msg, ok := <-al.ch:
-			if !ok {
-				// 通道关闭，刷完剩余
-				al.flushBatch(buf)
-				return
-			}
+		case msg := <-al.ch:
 			buf = append(buf, msg)
 			// 尝试批量读取更多
 			for len(buf) < 64 {
 				select {
-				case m, ok := <-al.ch:
-					if !ok {
-						al.flushBatch(buf)
-						return
-					}
+				case m := <-al.ch:
 					buf = append(buf, m)
 				default:
 					goto flush
@@ -87,13 +82,28 @@ func (al *AsyncLogger) drain() {
 				buf = buf[:0]
 			}
 		case <-al.done:
-			// 收到关闭信号，排空通道
-			close(al.ch)
-			for msg := range al.ch {
-				buf = append(buf, msg)
+			// 收到关闭信号，刷出当前 buf
+			if len(buf) > 0 {
+				al.flushBatch(buf)
+				buf = buf[:0]
 			}
-			al.flushBatch(buf)
-			return
+			// 非阻塞排空 channel 中残留的消息（不 close channel，避免写入方 panic）
+			for {
+				select {
+				case msg := <-al.ch:
+					buf = append(buf, msg)
+					if len(buf) >= 64 {
+						al.flushBatch(buf)
+						buf = buf[:0]
+					}
+				default:
+					// channel 已空
+					if len(buf) > 0 {
+						al.flushBatch(buf)
+					}
+					return
+				}
+			}
 		}
 	}
 }
@@ -106,6 +116,9 @@ func (al *AsyncLogger) flushBatch(batch [][]byte) {
 
 // Printf 异步写日志（非阻塞，缓冲区满则丢弃）
 func (al *AsyncLogger) Printf(format string, v ...interface{}) {
+	if atomic.LoadInt32(&al.closed) != 0 {
+		return
+	}
 	msg := fmt.Appendf(nil, format, v...)
 	msg = append(msg, '\n')
 	select {
@@ -118,6 +131,9 @@ func (al *AsyncLogger) Printf(format string, v ...interface{}) {
 
 // Println 异步写日志
 func (al *AsyncLogger) Println(v ...interface{}) {
+	if atomic.LoadInt32(&al.closed) != 0 {
+		return
+	}
 	msg := fmt.Appendln(nil, v...)
 	select {
 	case al.ch <- msg:
@@ -131,10 +147,13 @@ func (al *AsyncLogger) DroppedCount() int64 {
 	return atomic.LoadInt64(&al.droppedCount)
 }
 
-// Close 关闭异步日志，刷完缓冲区
+// Close 关闭异步日志，刷完缓冲区（幂等，可多次调用）
 func (al *AsyncLogger) Close() {
-	close(al.done)
-	al.wg.Wait()
+	al.closeOnce.Do(func() {
+		atomic.StoreInt32(&al.closed, 1)
+		close(al.done)
+		al.wg.Wait()
+	})
 }
 
 // --- 全局便捷函数 ---
