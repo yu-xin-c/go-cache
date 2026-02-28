@@ -1,8 +1,8 @@
 package mygocache
 
 import (
+	"hash/fnv"
 	"mygocache/lru"
-	"sync"
 )
 
 // CacheStrategy 定义缓存策略类型
@@ -15,32 +15,61 @@ const (
 	StrategyLRUK
 )
 
-type cache struct {
-	mu         sync.Mutex
+// 默认分片数，必须是 2 的幂
+const defaultShardCount = 32
+
+// cacheShard 是缓存的一个分片，拥有独立的 LRU 实例
+type cacheShard struct {
 	lru        *lru.Cache
 	lruK       *lru.LRUCache
 	cacheBytes int64
 	strategy   CacheStrategy
-	k          int // LRU-K 的 K 值
+	k          int
 }
 
-// NewCache 创建一个新的缓存实例
-// cacheBytes 是缓存的最大字节数
-// strategy 是缓存策略
-// k 是 LRU-K 的 K 值（仅当 strategy 为 StrategyLRUK 时有效）
+// cache 是分片缓存，将 key 哈希到不同的 shard 以降低锁竞争
+type cache struct {
+	shards    []cacheShard
+	shardMask uint32 // shardCount - 1，用于位运算取模
+}
+
+// fnvHash 计算 key 的 FNV-1a 哈希值
+func fnvHash(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32()
+}
+
+// getShard 根据 key 返回对应的分片
+func (c *cache) getShard(key string) *cacheShard {
+	return &c.shards[fnvHash(key)&c.shardMask]
+}
+
+// NewCache 创建一个新的分片缓存实例
 func NewCache(cacheBytes int64, strategy CacheStrategy, k int) *cache {
-	c := &cache{
-		cacheBytes: cacheBytes,
-		strategy:   strategy,
-		k:          k,
+	shardCount := defaultShardCount
+	// 每个 shard 分配 cacheBytes/shardCount 的容量
+	perShard := cacheBytes / int64(shardCount)
+	if perShard < 1 {
+		perShard = 1
 	}
 
-	// 立即初始化LRU缓存，避免统计信息丢失
-	switch strategy {
-	case StrategyLRUK:
-		c.lruK = lru.NewLRUK(cacheBytes, k, nil)
-	default: // StrategyLRU
-		c.lru = lru.New(cacheBytes, nil)
+	c := &cache{
+		shards:    make([]cacheShard, shardCount),
+		shardMask: uint32(shardCount - 1),
+	}
+
+	for i := 0; i < shardCount; i++ {
+		s := &c.shards[i]
+		s.cacheBytes = perShard
+		s.strategy = strategy
+		s.k = k
+		switch strategy {
+		case StrategyLRUK:
+			s.lruK = lru.NewLRUK(perShard, k, nil)
+		default:
+			s.lru = lru.New(perShard, nil)
+		}
 	}
 
 	return c
@@ -52,40 +81,32 @@ func defaultCache(cacheBytes int64) *cache {
 }
 
 func (c *cache) add(key string, value ByteView, ttl int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.getShard(key)
 
-	switch c.strategy {
+	switch s.strategy {
 	case StrategyLRUK:
-		if c.lruK == nil {
-			c.lruK = lru.NewLRUK(c.cacheBytes, c.k, nil)
-		}
-		c.lruK.Add(key, value, ttl)
-	default: // StrategyLRU
-		if c.lru == nil {
-			c.lru = lru.New(c.cacheBytes, nil)
-		}
-		c.lru.Add(key, value, ttl)
+		s.lruK.Add(key, value, ttl)
+	default:
+		s.lru.Add(key, value, ttl)
 	}
 }
 
 func (c *cache) get(key string) (value ByteView, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.getShard(key)
 
-	switch c.strategy {
+	switch s.strategy {
 	case StrategyLRUK:
-		if c.lruK == nil {
+		if s.lruK == nil {
 			return
 		}
-		if v, ok := c.lruK.Get(key); ok {
+		if v, ok := s.lruK.Get(key); ok {
 			return v.(ByteView), ok
 		}
-	default: // StrategyLRU
-		if c.lru == nil {
+	default:
+		if s.lru == nil {
 			return
 		}
-		if v, ok := c.lru.Get(key); ok {
+		if v, ok := s.lru.Get(key); ok {
 			return v.(ByteView), ok
 		}
 	}
@@ -94,84 +115,92 @@ func (c *cache) get(key string) (value ByteView, ok bool) {
 }
 
 func (c *cache) delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.getShard(key)
 
-	switch c.strategy {
+	switch s.strategy {
 	case StrategyLRUK:
-		if c.lruK != nil {
-			c.lruK.Remove(key)
+		if s.lruK != nil {
+			s.lruK.Remove(key)
 		}
-	default: // StrategyLRU
-		if c.lru != nil {
-			c.lru.Remove(key)
+	default:
+		if s.lru != nil {
+			s.lru.Remove(key)
 		}
 	}
 }
 
 func (c *cache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	switch c.strategy {
-	case StrategyLRUK:
-		if c.lruK != nil {
-			c.lruK.Clear()
-		}
-	default: // StrategyLRU
-		if c.lru != nil {
-			c.lru.Clear()
+	for i := range c.shards {
+		s := &c.shards[i]
+		switch s.strategy {
+		case StrategyLRUK:
+			if s.lruK != nil {
+				s.lruK.Clear()
+			}
+		default:
+			if s.lru != nil {
+				s.lru.Clear()
+			}
 		}
 	}
 }
 
 func (c *cache) stats() Stats {
-	var itemCount int
-	var hits, misses int64
+	var totalItems int
+	var totalHits, totalMisses int64
 
-	switch c.strategy {
-	case StrategyLRUK:
-		if c.lruK != nil {
-			itemCount = c.lruK.Len()
-			hits, misses = c.lruK.Stats()
-		}
-	default: // StrategyLRU
-		if c.lru != nil {
-			itemCount = c.lru.Len()
-			hits, misses = c.lru.Stats()
+	for i := range c.shards {
+		s := &c.shards[i]
+		switch s.strategy {
+		case StrategyLRUK:
+			if s.lruK != nil {
+				totalItems += s.lruK.Len()
+				h, m := s.lruK.Stats()
+				totalHits += h
+				totalMisses += m
+			}
+		default:
+			if s.lru != nil {
+				totalItems += s.lru.Len()
+				h, m := s.lru.Stats()
+				totalHits += h
+				totalMisses += m
+			}
 		}
 	}
 
 	return Stats{
-		ItemCount:  itemCount,
-		HitCount:   int(hits),
-		MissCount:  int(misses),
-		TotalCount: int(hits + misses),
+		ItemCount:  totalItems,
+		HitCount:   int(totalHits),
+		MissCount:  int(totalMisses),
+		TotalCount: int(totalHits + totalMisses),
 	}
 }
 
 func (c *cache) recordMiss() {
-	switch c.strategy {
+	s := &c.shards[0]
+	switch s.strategy {
 	case StrategyLRUK:
-		if c.lruK != nil {
-			c.lruK.RecordMiss()
+		if s.lruK != nil {
+			s.lruK.RecordMiss()
 		}
-	default: // StrategyLRU
-		if c.lru != nil {
-			c.lru.RecordMiss()
+	default:
+		if s.lru != nil {
+			s.lru.RecordMiss()
 		}
 	}
 }
 
 func (c *cache) recordHit() {
-	switch c.strategy {
+	s := &c.shards[0]
+	switch s.strategy {
 	case StrategyLRUK:
-		if c.lruK != nil {
-			c.lruK.RecordHit()
+		if s.lruK != nil {
+			s.lruK.RecordHit()
 		}
 	default: // StrategyLRU
-		if c.lru != nil {
-			c.lru.RecordHit()
+		if s.lru != nil {
+			s.lru.RecordHit()
 		}
 	}
 }
