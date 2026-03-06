@@ -8,11 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"mygocache/asynclog"
 	"mygocache/consistenthash"
 	"mygocache/kitex_gen/geecache"
 	"mygocache/kitex_gen/geecache/groupcache"
 
+	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/connpool"
 	"github.com/cloudwego/kitex/server"
 )
 
@@ -45,7 +49,15 @@ func (p *KitexPool) Set(peers ...string) {
 	p.kitexClients = make(map[string]groupcache.Client, len(peers))
 	for _, peer := range peers {
 		if peer != p.self {
-			cli, err := groupcache.NewClient(peer)
+			cli, err := groupcache.NewClient(peer,
+				client.WithLongConnection(connpool.IdleConfig{
+					MinIdlePerAddress: 10,
+					MaxIdlePerAddress: 100,
+					MaxIdleGlobal:     500,
+					MaxIdleTimeout:    60 * time.Second,
+				}),
+				client.WithRPCTimeout(3*time.Second),
+			)
 			if err != nil {
 				log.Printf("创建 Kitex 客户端失败: %v", err)
 				continue
@@ -60,7 +72,7 @@ func (p *KitexPool) PickPeer(key string) (PeerGetter, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if peer := p.peers.Get(key); peer != "" && peer != p.self {
-		log.Printf("Pick peer %s", peer)
+		asynclog.Printf("Pick peer %s", peer)
 		if client, ok := p.kitexClients[peer]; ok {
 			return &kitexGetter{client: client}, true
 		}

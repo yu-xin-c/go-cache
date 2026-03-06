@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"mygocache"
+	"mygocache/asynclog"
 )
 
 var db = map[string]string{
@@ -15,14 +16,14 @@ var db = map[string]string{
 }
 
 func createGroup() *mygocache.Group {
-	return mygocache.NewGroup("scores", 2<<10, mygocache.GetterFunc(
+	return mygocache.NewGroupWithTTL("scores", 2<<10, mygocache.GetterFunc(
 		func(key string) ([]byte, error) {
 			log.Println("[SlowDB] search key", key)
 			if v, ok := db[key]; ok {
 				return []byte(v), nil
 			}
 			return nil, fmt.Errorf("%s not exist", key)
-		}))
+		}), 0)
 }
 
 func startCacheServer(addr string, addrs []string, gee *mygocache.Group) {
@@ -37,6 +38,10 @@ func main() {
 	var port int
 	flag.IntVar(&port, "port", 8001, "Geecache server port")
 	flag.Parse()
+
+	// 初始化异步日志
+	asynclog.Init(16384)
+	defer asynclog.Close()
 
 	addrMap := map[int]string{
 		8001: "http://localhost:8001",

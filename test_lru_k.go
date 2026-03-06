@@ -15,14 +15,12 @@ func getData(key string) ([]byte, error) {
 }
 
 func mainLRUK() {
-	// 创建使用 LRU-K 策略的缓存组
-	cacheGroup := mygocache.NewGroupWithOptions(
+	// 创建使用 LRU-K 策略的缓存组（默认即为 LRU-K）
+	cacheGroup := mygocache.NewGroupWithTTL(
 		"test-group",
 		1024*1024, // 1MB 缓存
 		mygocache.GetterFunc(getData),
 		60, // 默认TTL 60秒
-		mygocache.StrategyLRUK,
-		2, // K=2
 	)
 
 	log.Println("Testing LRU-K Cache Strategy")
